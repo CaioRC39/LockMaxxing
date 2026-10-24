@@ -1,0 +1,242 @@
+# =============================================================================
+# sdkconfig.defaults — Configurações padrão do projeto
+# =============================================================================
+#
+# Este arquivo é lido pelo ESP-IDF quando o sdkconfig ainda não existe.
+# Ele define o "DNA" do firmware: target, memória, frequência, watchdog.
+#
+# Para regenerar o sdkconfig a partir deste arquivo:
+#   rm sdkconfig
+#   idf.py build
+#
+# Ou, para aplicar mudanças sem apagar tudo:
+#   idf.py reconfigure
+#
+# Depois de rodar o build, se quiser ajustar algo pontualmente, use:
+#   idf.py menuconfig
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# TARGET — Para qual chip vamos compilar
+# -----------------------------------------------------------------------------
+# esp32s3 = ESP32-S3. Isso muda a toolchain (xtensa-esp32s3-elf-gcc),
+# o bootloader, os drivers internos e a forma como a PSRAM é acessada.
+# Se você trocar para outra placa (ex: ESP32 clássico), mude aqui e rode
+# "idf.py set-target esp32" para limpar o build antigo.
+CONFIG_IDF_TARGET="esp32s3"
+
+# -----------------------------------------------------------------------------
+# FLASH — Tamanho e modo
+# -----------------------------------------------------------------------------
+# A N16R8 tem 16 MB de flash. Se deixarmos o padrão (2 MB), o linker
+# reclama que o app não cabe. 16MB é o valor correto.
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="16MB"
+
+# Modo QIO (Quad I/O) — usa 4 linhas de dados para falar com a flash.
+# É o modo mais rápido e o padrão das placas N16R8.
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+
+# -----------------------------------------------------------------------------
+# PSRAM — Memória externa (8 MB na N16R8)
+# -----------------------------------------------------------------------------
+# Sem PSRAM, a câmera não consegue alocar framebuffers em SVGA.
+# A PSRAM do ESP32-S3 N16R8 é do tipo OCTAL (8 linhas de dados).
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_TYPE_AUTO=y
+CONFIG_SPIRAM_SPEED_80M=y
+
+# Permite que malloc() use PSRAM automaticamente quando o heap interno
+# estiver cheio. Sem isso, só alocações explícitas com heap_caps_malloc
+# vão para a PSRAM.
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
+
+# Habilita o comando "heap_caps" para debug (útil durante desenvolvimento).
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
+# -----------------------------------------------------------------------------
+# CPU — Frequência e cache
+# -----------------------------------------------------------------------------
+# 240 MHz é a frequência máxima do ESP32-S3. Quanto maior, mais rápido
+# o processamento de JPEG e a criptografia do Wi-Fi.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
+
+# Cache de dados de 64 KB (máximo). Ajuda muito com processamento de imagem.
+CONFIG_ESP32S3_DATA_CACHE_64KB=y
+CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y
+
+# -----------------------------------------------------------------------------
+# FREERTOS — Tick rate e comportamento
+# -----------------------------------------------------------------------------
+# 1000 Hz = 1 tick por milissegundo. Isso permite delays precisos de 1 ms,
+# útil para o servo (que precisa de pulsos de 1-2 ms) e para timeouts finos.
+CONFIG_FREERTOS_HZ=1000
+
+# Habilita checagem de stack overflow (panic se uma task estourar a stack).
+# Ótimo para aprender — se você errar o tamanho de stack, o firmware avisa.
+CONFIG_FREERTOS_CHECK_STACKOVERFLOW_CANARY=y
+
+# Habilita estatísticas de runtime — permite ver quanto tempo cada task
+# gastou de CPU com vTaskGetRunTimeStats().
+CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
+
+# Uso de múltiplos cores (o S3 é dual-core). Necessário para espalhar
+# as tasks entre Core 0 e Core 1.
+CONFIG_FREERTOS_UNICORE=n
+
+# -----------------------------------------------------------------------------
+# WATCHDOG — Proteção contra travamentos
+# -----------------------------------------------------------------------------
+# O Task Watchdog monitora as tasks registradas. Se uma task ficar muito
+# tempo sem "alimentar" o watchdog, o ESP32 reinicia. Isso evita que um
+# bug trave a placa para sempre.
+CONFIG_ESP_TASK_WDT_EN=y
+CONFIG_ESP_TASK_WDT_INIT=y
+CONFIG_ESP_TASK_WDT_TIMEOUT_S=10
+
+# Não queremos que o watchdog reinicie durante o debug. Em produção, deixe
+# como está (y). Durante desenvolvimento, você pode desabilitar via menuconfig.
+CONFIG_ESP_TASK_WDT_PANIC=y
+
+# O IDLE task do FreeRTOS pode ficar bloqueado em delay — isso é normal.
+# Se for monitorado, o watchdog dispara injustamente. Desabilitamos.
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
+
+# Interrupt watchdog — timer de proteção contra travamento de ISRs.
+# 800 ms dá folga para operações de flash/OTA que mascaram interrupções
+# por dezenas de ms. Mantemos explícito para evitar a mensagem do Kconfig.
+CONFIG_ESP_INT_WDT=y
+CONFIG_ESP_INT_WDT_TIMEOUT_MS=800
+
+# -----------------------------------------------------------------------------
+# LOG — Nível de verbosidade
+# -----------------------------------------------------------------------------
+# INFO é o padrão. DEBUG mostra mais detalhes (bom para aprender, ruim para
+# produção — gera muito tráfego na UART e deixa o sistema mais lento).
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+CONFIG_LOG_DEFAULT_LEVEL=3
+
+# Permite que cada módulo sobrescreva o nível global em runtime.
+CONFIG_LOG_MAXIMUM_LEVEL_DEBUG=y
+CONFIG_LOG_MAXIMUM_LEVEL=4
+
+# -----------------------------------------------------------------------------
+# Wi-Fi — Configurações de conexão
+# -----------------------------------------------------------------------------
+# Salva credenciais Wi-Fi na NVS (memória não-volátil). Assim a reconexão
+# após reboot é instantânea.
+CONFIG_ESP_WIFI_NVS_ENABLED=y
+
+# Habilita o modo station (cliente). Não precisamos de softAP neste projeto.
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
+
+# Reduz o consumo de RAM do Wi-Fi (menos buffers). Bom quando temos PSRAM.
+CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=10
+CONFIG_ESP_WIFI_DYNAMIC_RX_BUFFER_NUM=32
+CONFIG_ESP_WIFI_DYNAMIC_TX_BUFFER_NUM=32
+
+# Habilita AMSDU (agregação de pacotes) — melhora throughput.
+CONFIG_ESP_WIFI_AMPDU_RX_ENABLED=y
+CONFIG_ESP_WIFI_AMPDU_TX_ENABLED=y
+
+# -----------------------------------------------------------------------------
+# LWIP — Stack TCP/IP
+# -----------------------------------------------------------------------------
+# Aumenta o número máximo de sockets abertos. Precisamos de pelo menos:
+#   - 1 para MQTT
+#   - 1 para DNS
+#   - alguns de reserva
+CONFIG_LWIP_MAX_SOCKETS=10
+
+# Aumenta o buffer de recepção TCP. Chunks de 2 KB precisam de buffer
+# confortável para não causar fragmentação de pacotes.
+CONFIG_LWIP_TCP_RECVMBOX_SIZE=32
+CONFIG_LWIP_TCP_SND_BUF_DEFAULT=5744
+CONFIG_LWIP_TCP_WND_DEFAULT=5744
+
+# -----------------------------------------------------------------------------
+# MQTT — Buffer do cliente
+# -----------------------------------------------------------------------------
+# O buffer de envio precisa caber: chunk (2048) + header (8) + tópico (30)
+# + overhead MQTT (~10). Total: ~2100 bytes. Deixamos 4096 para folga.
+CONFIG_MQTT_BUFFER_SIZE=4096
+
+# Habilita suporte a transporte sobre TCP (o padrão).
+CONFIG_MQTT_TRANSPORT_SSL=n
+CONFIG_MQTT_TRANSPORT_WEBSOCKET=n
+
+# -----------------------------------------------------------------------------
+# PARTITION TABLE — Tabela customizada para OTA (A/B)
+# -----------------------------------------------------------------------------
+# "two_ota" cria duas partições de app (ota_0, ota_1) e uma partição otadata
+# para o bootloader alternar entre elas.
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# -----------------------------------------------------------------------------
+# COMPILER — Otimizações
+# -----------------------------------------------------------------------------
+# -Og é um bom equilíbrio: otimiza sem tornar o debug impossível.
+# Para produção, use -O2 (CONFIG_COMPILER_OPTIMIZATION_PERF=y).
+CONFIG_COMPILER_OPTIMIZATION_DEFAULT=y
+CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_ENABLE=y
+
+# -----------------------------------------------------------------------------
+# FREERTOS TIMERS — Para timeouts precisos
+# -----------------------------------------------------------------------------
+# Software timers do FreeRTOS com stack de 3 KB.
+CONFIG_FREERTOS_TIMER_TASK_STACK_DEPTH=3072
+CONFIG_FREERTOS_TIMER_QUEUE_LENGTH=10
+
+# -----------------------------------------------------------------------------
+# NVS — Para armazenar credenciais Wi-Fi e configurações persistentes
+# -----------------------------------------------------------------------------
+CONFIG_NVS_ENCRYPTION=n
+
+# -----------------------------------------------------------------------------
+# UART — Console de logs
+# -----------------------------------------------------------------------------
+# 115200 baud é o padrão. Não mude a menos que tenha motivo.
+CONFIG_ESP_CONSOLE_UART_BAUDRATE=115200
+CONFIG_ESP_CONSOLE_UART_NUM=0
+
+# -----------------------------------------------------------------------------
+# DEBUG — Desabilitar coisas que atrapalham em produção
+# -----------------------------------------------------------------------------
+# Desabilita o reset automático ao conectar no monitor serial.
+# Sem isso, toda vez que você abrir "idf.py monitor" a placa reinicia.
+CONFIG_ESP_CONSOLE_UART_DEFAULT=y
+
+# Habilita backtrace em panics — facilita muito o debug de crashes.
+CONFIG_ESP_SYSTEM_PANIC_PRINT_HALT=y
+CONFIG_ESP_SYSTEM_PANIC_GDBSTUB=n
+
+# -----------------------------------------------------------------------------
+# OTA — Atualizações de firmware
+# -----------------------------------------------------------------------------
+# Habilita o componente esp_https_ota e o processo de atualização.
+CONFIG_OTA_ALLOW_HTTP=n
+CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y
+
+# -----------------------------------------------------------------------------
+# OTA — Servidor HTTPS local (push)
+# -----------------------------------------------------------------------------
+# Habilita o servidor HTTP com suporte a TLS (usado pelo endpoint local).
+CONFIG_ESP_HTTPS_SERVER_ENABLE=y
+
+# -----------------------------------------------------------------------------
+# ROLLBACK — Reversão automática em caso de falha
+# -----------------------------------------------------------------------------
+# Habilita a funcionalidade de rollback no bootloader.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# Define o modo de confirmação como "automático no boot" (padrão em versões novas).
+# Se o firmware não chamar esp_ota_mark_app_valid_cancel_rollback(), o
+# bootloader pode considerar a imagem como não confirmada e reverter.
+CONFIG_BOOTLOADER_APP_ROLLBACK_CONFIRM_ON_STARTUP=y

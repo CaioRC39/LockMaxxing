@@ -1,0 +1,102 @@
+# =============================================================================
+# .gitignore — LockMaxxing ESP32-CAM
+# =============================================================================
+# Mantenha este arquivo enxuto e específico do projeto.
+# Artefatos gerados, credenciais e estados de máquina ficam de fora.
+# =============================================================================
+
+# ---------- Credenciais locais (NUNCA comitar) ----------
+# config.h contém SSID, senha Wi-Fi, IP do broker.
+# O template (config.h.example) fica no repo; o config.h real é local.
+main/config.h
+
+# Certificado TLS auto-assinado (contém a CHAVE PRIVADA em plain text)
+main/certs.h
+*.pem
+*.key
+*.crt
+*.p12
+*.der
+
+# ---------- ESP-IDF build ----------
+build/
+sdkconfig
+sdkconfig.old
+sdkconfig.orig
+compile_commands.json
+
+# Componentes baixados do Component Registry — re-baixados no build via
+# main/idf_component.yml. Não versione (é equivalente a node_modules).
+managed_components/
+
+# ---------- IDE / editor ----------
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.history/           # extensão "Local History" do VSCode
+*.code-workspace    # específico de máquina
+c_cpp_properties.json
+
+# ---------- Windows ----------
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+*.lnk
+
+# ---------- macOS ----------
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+
+# ---------- Linux ----------
+.directory
+.nfs*
+
+# ---------- Python (ferramentas de teste) ----------
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+.venv-tools/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# ---------- Host tests (artefatos gerados) ----------
+tools/host_tests/build/
+tools/host_tests/external/
+tools/.tmp_certs/
+
+# ---------- Runtime (saída dos scripts de teste) ----------
+received_images/
+*.log
+mosquitto.log
+baixado.bin
+
+# ---------- Binários soltos na raiz (só segurança extra) ----------
+# Os .bin/.elf/.map reais ficam dentro de build/, já ignorado acima.
+# Estes padrões pegam qualquer cópia acidental para a raiz do projeto.
+/*.bin
+/*.elf
+/*.map
+
+# ---------- Misc ----------
+*.tmp
+*.bak
+*.orig
+graficos/
+
+# ---------- Ferramentas locais / caches ----------
+.clangd
+.cache/
+
+# ---------- Logs de depuração ----------
+*-trace.txt

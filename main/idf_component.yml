@@ -1,0 +1,26 @@
+# =============================================================================
+# main/idf_component.yml — Gerenciador de componentes do ESP-IDF
+# =============================================================================
+#
+# Este arquivo diz ao IDF Component Manager:
+#   1. Qual versão mínima do ESP-IDF o projeto exige.
+#   2. Quais componentes externos devem ser baixados automaticamente.
+#
+# O componente "esp32-camera" NÃO faz parte do ESP-IDF.
+# Ele é publicado no Component Registry da Espressif e baixado para
+# "managed_components/espressif__esp32-camera/" na primeira compilação.
+#
+# Se este arquivo não existir, o build falha com:
+#   Failed to resolve component 'esp32-camera'.
+# =============================================================================
+
+dependencies:
+  # Versão mínima do ESP-IDF. O projeto usa APIs de v5.1+.
+  idf: '>=5.1'
+
+  # Driver oficial da câmera para ESP32 / ESP32-S2 / ESP32-S3.
+  # A versão 2.0.15 é estável e compatível com IDF 5.x.
+  # O símbolo "^" permite atualizações compatíveis (2.x.x).
+  espressif/esp32-camera: ^2.0.15
+  espressif/mqtt: '*'
+  espressif/cjson: "^1.7.19"

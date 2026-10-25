@@ -6,10 +6,6 @@
 # =============================================================================
 
 # ---------- Credenciais locais (NUNCA comitar) ----------
-# config.h contém SSID, senha Wi-Fi, IP do broker.
-# O template (config.h.example) fica no repo; o config.h real é local.
-main/config.h
-
 # Certificado TLS auto-assinado (contém a CHAVE PRIVADA em plain text)
 main/certs.h
 *.pem

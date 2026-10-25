@@ -23,6 +23,8 @@
 #ifndef CONFIG_H
 #define CONFIG_H
 
+#include "sdkconfig.h"   // garante que as macros CONFIG_* estejam visíveis
+
 /* =============================================================================
  * 1. CREDENCIAIS E BROKER MQTT — EDITE ESTES VALORES ANTES DE COMPILAR
  * =============================================================================
@@ -34,28 +36,37 @@
  * "Melhorias futuras".
  * ========================================================================== */
 
+ // As credenciais vêm do Kconfig (menuconfig).
+// Os fallbacks abaixo só são usados se a opção não existir (proteção extra).
 /* --- Wi-Fi --- */
-#define CONFIG_WIFI_SSID            "SUA_REDE_AQUI"
-#define CONFIG_WIFI_PASSWORD        "SUA_SENHA_AQUI"
+#ifndef CONFIG_LOCKMAXXING_WIFI_SSID
+#define CONFIG_LOCKMAXXING_WIFI_SSID       "myssid"
+#endif
+
+#ifndef CONFIG_LOCKMAXXING_WIFI_PASSWORD
+#define CONFIG_LOCKMAXXING_WIFI_PASSWORD   "mypassword"
+#endif
+
 #define CONFIG_WIFI_MAX_RETRY       10
 #define CONFIG_WIFI_RETRY_DELAY_MS  3000
 
+
 /* --- Broker MQTT --- */
-#define CONFIG_MQTT_BROKER_URI      "mqtt://192.168.1.100:1883"
-#define CONFIG_MQTT_USERNAME        NULL        /* NULL = sem autenticação */
-#define CONFIG_MQTT_PASSWORD        NULL        /* NULL = sem autenticação */
-#define CONFIG_MQTT_CLIENT_ID       "esp32-camera-01"
-
-/* Verificação em tempo de compilação: avisa se os placeholders não
- * foram substituídos. Não falha o build — é só um aviso. */
-
-/*
- #if defined(__GNUC__)
-  #if __builtin_strcmp(CONFIG_WIFI_SSID, "SUA_REDE_AQUI") == 0
-    #warning "config.h: CONFIG_WIFI_SSID ainda é o placeholder"
-  #endif
+#ifndef CONFIG_LOCKMAXXING_MQTT_BROKER_URI
+#define CONFIG_LOCKMAXXING_MQTT_BROKER_URI "mqtt://192.168.1.100:1883"
 #endif
-*/
+
+#ifndef LOCKMAXXING_MQTT_USERNAME
+#define LOCKMAXXING_MQTT_USERNAME ""
+#endif
+
+#ifndef LOCKMAXXING_MQTT_PASSWORD
+#define LOCKMAXXING_MQTT_PASSWORD ""
+#endif
+
+#ifndef LOCKMAXXING_MQTT_CLIENT_ID
+#define LOCKMAXXING_MQTT_CLIENT_ID "esp32-camera-01"
+#endif
 
 
 /* =============================================================================
@@ -236,7 +247,9 @@
 
 /* Intervalo entre capturas automáticas quando em IDLE. Se você quiser
  * disparar manualmente (botão, MQTT), mude para 0 e implemente o trigger. */
-#define CONFIG_CAPTURE_INTERVAL_MS      (30 * 1000)     /* 30 s */
+#ifndef LOCKMAXXING_CAPTURE_INTERVAL_MS
+#define LOCKMAXXING_CAPTURE_INTERVAL_MS 30000
+#endif
 
 /* =============================================================================
  * 9. STACKS E PRIORIDADES DAS TASKS

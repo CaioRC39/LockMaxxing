@@ -206,7 +206,7 @@ HEADER_EOF
     echo "    ;"
     echo ""
     echo "static const unsigned int SERVER_CERT_PEM_LEN ="
-    echo "    sizeof(SERVER_CERT_PEM) - 1;   /* sem o '\\0' final */"
+    echo "    sizeof(SERVER_CERT_PEM);   /* com o '\\0' final */"
     echo ""
 
     # --- Chave privada ---
@@ -215,7 +215,7 @@ HEADER_EOF
     echo "    ;"
     echo ""
     echo "static const unsigned int SERVER_KEY_PEM_LEN ="
-    echo "    sizeof(SERVER_KEY_PEM) - 1;    /* sem o '\\0' final */"
+    echo "    sizeof(SERVER_KEY_PEM);    /* com o '\\0' final */"
     echo ""
 
     cat <<'FOOTER_EOF'

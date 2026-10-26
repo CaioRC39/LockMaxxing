@@ -234,6 +234,12 @@ esp_err_t ota_get_running_partition_info(const esp_partition_t **part_out);
  */
 esp_err_t ota_get_next_update_partition_info(const esp_partition_t **part_out);
 
+/* Flag simples de "OTA em andamento". true = captura/envio pausados.
+ * Escrita pelo módulo OTA (server e client), lida por qualquer task.
+ * Volatile porque é acessada de múltiplos cores sem sincronização
+ * (bool atômico em Xtensa — leitura/escrita de 1 byte é indivisível). */
+extern volatile bool g_ota_busy;
+
 #ifdef __cplusplus
 }
 #endif

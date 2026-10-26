@@ -139,23 +139,6 @@ static void force_reboot(const char *reason, uint32_t delay_ms)
 }
 
 /* -----------------------------------------------------------------------------
- * Verificação de placeholders de credenciais
- * -------------------------------------------------------------------------- */
-
-static void warn_placeholder_credentials(void)
-{
-    if (strcmp(CONFIG_WIFI_SSID, "SUA_REDE_AQUI") == 0) {
-        ESP_LOGW(TAG, "=================================================");
-        ESP_LOGW(TAG, " CONFIG_WIFI_SSID ainda é o placeholder!");
-        ESP_LOGW(TAG, " Edite main/config.h antes de usar o Wi-Fi.");
-        ESP_LOGW(TAG, "=================================================");
-    }
-    if (strcmp(CONFIG_MQTT_BROKER_URI, "mqtt://192.168.1.100:1883") == 0) {
-        ESP_LOGW(TAG, "CONFIG_MQTT_BROKER_URI ainda é o placeholder");
-    }
-}
-
-/* -----------------------------------------------------------------------------
  * app_main
  * -------------------------------------------------------------------------- */
 
@@ -166,10 +149,8 @@ void app_main(void)
     bool network_ok  = false;
 
     ESP_LOGI(TAG, "===============================================");
-    ESP_LOGI(TAG, " ESP32-CAM MQTT + OTA — boot");
+    ESP_LOGI(TAG, " ESP32-CAM MQTT + OTA — boot V2");
     ESP_LOGI(TAG, "===============================================");
-
-    warn_placeholder_credentials();
 
     /* -------------------------------------------------------------------------
      * 1) NVS

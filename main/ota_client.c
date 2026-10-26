@@ -467,6 +467,8 @@ static void ota_client_task(void *arg)
     s_ctx_in_use = false;
     portEXIT_CRITICAL(&s_ctx_lock);
 
+    g_ota_busy = false;
+
     /* A task se auto-deleta. Nada mais a fazer. */
     vTaskDelete(NULL);
 }
@@ -543,6 +545,9 @@ esp_err_t ota_https_update_start(const char *url,
 
     s_ctx.progress_cb = progress_cb;
     s_ctx.result_cb   = result_cb;
+
+    ota_set_state(OTA_STATE_DOWNLOADING);
+    g_ota_busy = true;
 
     /* Cria a task. Stack em PSRAM? Não — stack de task precisa ser RAM
      * interna. Por isso OTA_CLIENT_TASK_STACK é 8 KB em RAM interna,

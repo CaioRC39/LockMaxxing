@@ -43,4 +43,13 @@ menu "LockMaxxing Configuration"
         help
             Tempo entre capturas automáticas em milissegundos.
 
+    config LOCKMAXXING_OTA_WARMUP_S
+        int "OTA warmup (segundos após boot)"
+        default 300
+        range 0 3600
+        help
+            Tempo mínimo desde o boot para aceitar OTA via push.
+            Evita conflito com DHCP/TLS/slow-start durante inicialização.
+            0 desabilita a checagem.
+
 endmenu

@@ -56,16 +56,16 @@
 #define CONFIG_LOCKMAXXING_MQTT_BROKER_URI "mqtt://192.168.1.100:1883"
 #endif
 
-#ifndef LOCKMAXXING_MQTT_USERNAME
-#define LOCKMAXXING_MQTT_USERNAME ""
+#ifndef CONFIG_LOCKMAXXING_MQTT_USERNAME
+#define CONFIG_LOCKMAXXING_MQTT_USERNAME ""
 #endif
 
-#ifndef LOCKMAXXING_MQTT_PASSWORD
-#define LOCKMAXXING_MQTT_PASSWORD ""
+#ifndef CONFIG_LOCKMAXXING_MQTT_PASSWORD
+#define CONFIG_LOCKMAXXING_MQTT_PASSWORD ""
 #endif
 
-#ifndef LOCKMAXXING_MQTT_CLIENT_ID
-#define LOCKMAXXING_MQTT_CLIENT_ID "esp32-camera-01"
+#ifndef CONFIG_LOCKMAXXING_MQTT_CLIENT_ID
+#define CONFIG_LOCKMAXXING_MQTT_CLIENT_ID "esp32-camera-01"
 #endif
 
 
@@ -169,10 +169,10 @@
  * 20 MHz é o mais comum e funciona na maioria dos casos.
  * ========================================================================== */
 
-#define CONFIG_CAM_XCLK_FREQ_HZ     20000000
+#define CONFIG_CAM_XCLK_FREQ_HZ     10000000
 #define CONFIG_CAM_FRAMESIZE        FRAMESIZE_SVGA
 #define CONFIG_CAM_JPEG_QUALITY     12
-#define CONFIG_CAM_FB_COUNT         2
+#define CONFIG_CAM_FB_COUNT         1
 #define CONFIG_CAM_GRAB_MODE        CAMERA_GRAB_LATEST
 #define CONFIG_CAM_PIXEL_FORMAT     PIXFORMAT_JPEG
 
@@ -247,8 +247,8 @@
 
 /* Intervalo entre capturas automáticas quando em IDLE. Se você quiser
  * disparar manualmente (botão, MQTT), mude para 0 e implemente o trigger. */
-#ifndef LOCKMAXXING_CAPTURE_INTERVAL_MS
-#define LOCKMAXXING_CAPTURE_INTERVAL_MS 30000
+#ifndef CONFIG_LOCKMAXXING_CAPTURE_INTERVAL_MS
+#define CONFIG_LOCKMAXXING_CAPTURE_INTERVAL_MS 30000
 #endif
 
 /* =============================================================================

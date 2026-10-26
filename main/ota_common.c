@@ -41,6 +41,8 @@ SemaphoreHandle_t g_ota_mutex = NULL;
  */
 static ota_state_t g_ota_state = OTA_STATE_IDLE;
 
+volatile bool g_ota_busy = false;
+
 /* -----------------------------------------------------------------------------
  * Estado (get/set com mutex)
  * -------------------------------------------------------------------------- */

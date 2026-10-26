@@ -24,6 +24,8 @@
 
 #include "ota_internal.h"
 
+#include "sdkconfig.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -149,11 +151,35 @@ static esp_err_t update_post_handler(httpd_req_t *req)
              req->uri, req->content_len);
 
     /* -------------------------------------------------------------------------
-     * 1) Exclusividade: uma OTA por vez
+     * Grace period: rejeita OTA nos primeiros N segundos após boot.
+     *
+     * Colocado ANTES do mutex para:
+     *   - Não segurar recurso desnecessariamente
+     *   - Não pausar a comm_task (g_ota_busy)
+     *   - Não sujar o estado da máquina (DOWNLOADING → ERROR → IDLE)
+     *
+     * Se CONFIG_LOCKMAXXING_OTA_WARMUP_S == 0, checagem é pulada.
      * ---------------------------------------------------------------------- */
+    int64_t uptime_s = esp_timer_get_time() / 1000000;
+    if (uptime_s < CONFIG_LOCKMAXXING_OTA_WARMUP_S) {
+        int remaining = CONFIG_LOCKMAXXING_OTA_WARMUP_S - (int)uptime_s;
+        ESP_LOGW(TAG_SRV, "OTA rejeitada: warmup (uptime=%llds, faltam %ds)",
+                 (long long)uptime_s, remaining);
 
+        char body[128];
+        snprintf(body, sizeof(body),
+                 "{\"error\":\"warmup\",\"uptime_s\":%lld,\"retry_in_s\":%d}",
+                 (long long)uptime_s, remaining);
+
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_hdr(req, "Retry-After", "60");
+        httpd_resp_set_hdr(req, "Connection", "close");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
+    }
+
+    /* 1) Exclusividade: uma OTA por vez */
     if (g_upload_mutex == NULL) {
-        /* Servidor iniciado sem inicialização adequada — bug do chamador. */
         ESP_LOGE(TAG_SRV, "Mutex de upload não inicializado");
         return send_json_error(req, 500, "server not initialized");
     }
@@ -163,6 +189,9 @@ static esp_err_t update_post_handler(httpd_req_t *req)
         return send_json_error(req, 409, "update already in progress");
     }
 
+    ota_set_state(OTA_STATE_DOWNLOADING);
+    g_ota_busy = true;
+
     /* A partir daqui, precisamos liberar o mutex em QUALQUER caminho. */
     esp_err_t err = ESP_OK;
     esp_ota_handle_t ota_handle = 0;
@@ -170,8 +199,6 @@ static esp_err_t update_post_handler(httpd_req_t *req)
     bool sha_initialized = false;
     size_t total_received = 0;
     bool reboot_pending = false;
-
-    ota_set_state(OTA_STATE_DOWNLOADING);
 
 #define SRV_FAIL(code, msg)                                                    \
     do {                                                                       \
@@ -328,11 +355,10 @@ cleanup:
     /* Libera recursos internos do handler (sha, ota_handle, s_upload_buf ) */
     if (sha_initialized) psa_hash_abort(&sha_ctx);
     if (ota_handle != 0) esp_ota_abort(ota_handle);
+    if (err != ESP_OK) ota_set_state(OTA_STATE_ERROR);
+    if (err != ESP_OK) g_ota_busy = false;
 
-    if (err != ESP_OK) {
-        ota_set_state(OTA_STATE_ERROR);
-    }
-
+    /* Se reboot_pending, deixa true — vai reiniciar. */
     if (reboot_pending) {
         /* MANTÉM o mutex durante o delay: bloqueia novos POSTs (409)
          * até o reboot acontecer. Nenhuma segunda requisição pode
@@ -439,48 +465,59 @@ static esp_err_t build_ssl_config(httpd_ssl_config_t *cfg, uint16_t port)
 
     *cfg = (httpd_ssl_config_t)HTTPD_SSL_CONFIG_DEFAULT();
 
-    /* Certificado e chave (ponteiros para certs.h gerado no build). */
-    cfg->servercert     = (const uint8_t *)SERVER_CERT_PEM;
-    cfg->servercert_len = SERVER_CERT_PEM_LEN;
-    cfg->prvtkey_pem    = (const uint8_t *)SERVER_KEY_PEM;
-    cfg->prvtkey_len    = SERVER_KEY_PEM_LEN;
+    /* Certificado e chave (ponteiros para certs.h gerado no build).
+     *
+     * mbedtls exige que o comprimento INCLUA o '\0' terminador para
+     * strings PEM. Usamos strlen() + 1 para garantir isso, independente
+     * de SERVER_CERT_PEM_LEN estar com ou sem o '\0' (o gerador pode
+     * ter mudado entre versões).
+     */
+    const char *cert_str = (const char *)SERVER_CERT_PEM;
+    const char *key_str  = (const char *)SERVER_KEY_PEM;
+
+    cfg->servercert     = (const uint8_t *)cert_str;
+    cfg->servercert_len = strlen(cert_str) + 1;
+    cfg->prvtkey_pem    = (const uint8_t *)key_str;
+    cfg->prvtkey_len    = strlen(key_str) + 1;
 
     /* Porta pública. */
     cfg->port_secure = port;
 
     /* Configurações do servidor HTTP interno. */
     cfg->httpd.server_port        = port;
-    cfg->httpd.ctrl_port          = 0;   /* 0 = escolhe automaticamente */
+    cfg->httpd.ctrl_port          = 0;
     cfg->httpd.stack_size         = OTA_SERVER_TASK_STACK;
-    cfg->httpd.max_uri_handlers   = 8;   /* temos 2; folga p/ expansão    */
-    cfg->httpd.max_open_sockets   = 3;   /* 1 upload + 1 status + 1 folga */
+    cfg->httpd.max_uri_handlers   = 8;
+    cfg->httpd.max_open_sockets   = 3;
     cfg->httpd.lru_purge_enable   = true;
     cfg->httpd.recv_wait_timeout  = OTA_SERVER_RECV_TIMEOUT_MS / 1000;
     cfg->httpd.send_wait_timeout  = 5;
     cfg->httpd.uri_match_fn       = httpd_uri_match_wildcard;
-
-    /*
-     * Rejeitamos o upload se o cliente tentar reutilizar conexão (keep-alive)
-     * durante um POST. Cada requisição é uma nova sessão TLS — mais seguro
-     * e mais simples de raciocinar.
-     */
     cfg->httpd.keep_alive_enable  = false;
 
     /* Validação defensiva: certificado e chave são obrigatórios. */
-    if (cfg->servercert_len == 0 || cfg->prvtkey_len == 0) {
-        ESP_LOGE(TAG_SRV, "Certificado ou chave com comprimento zero "
-                          "(certs.h vazio?)");
+    if (cfg->servercert_len < 30 || cfg->prvtkey_len < 30) {
+        ESP_LOGE(TAG_SRV, "Certificado ou chave com comprimento suspeito "
+                          "(cert=%u, key=%u) — certs.h vazio?",
+                 (unsigned)cfg->servercert_len,
+                 (unsigned)cfg->prvtkey_len);
         return ESP_ERR_INVALID_STATE;
     }
 
-    /* mbedtls também precisa do null-terminator após o PEM. Verificamos
-     * que a string termina em "-----END..." — não é à prova de balas,
-     * mas pega o erro mais comum: cert gerado como DER em vez de PEM. */
-    if (cfg->servercert_len < 30 ||
-        memcmp(cfg->servercert + cfg->servercert_len - 26,
-               "-----END CERTIFICATE-----", 25) != 0) {
+    /* Verifica marcadores BEGIN/END. Usa strstr(), que é robusto ao
+     * posicionamento exato do newline final e não depende do comprimento
+     * passado. O array subjacente é null-terminated (static const char[]). */
+    if (strstr(cert_str, "-----BEGIN CERTIFICATE-----") == NULL ||
+        strstr(cert_str, "-----END CERTIFICATE-----")   == NULL) {
         ESP_LOGE(TAG_SRV, "Certificado não parece ser PEM "
-                          "(últimos bytes não são '-----END CERTIFICATE-----')");
+                          "(faltam marcadores BEGIN ou END)");
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (strstr(key_str, "-----BEGIN") == NULL ||
+        strstr(key_str, "-----END")   == NULL) {
+        ESP_LOGE(TAG_SRV, "Chave privada não parece ser PEM "
+                          "(faltam marcadores BEGIN ou END)");
         return ESP_ERR_INVALID_STATE;
     }
 

@@ -142,7 +142,7 @@ static void handle_result_message(const char *data, int len)
     } else if (cJSON_IsNumber(id_item)) {
         double v = id_item->valuedouble;
         if (v < 0.0 || v > (double)UINT32_MAX) {
-            ESP_LOGW(TAG, "Campo 'id' fora do range uint32: %f", v);
+            ESP_LOGW(TAG, "Campo 'id' fora do range uint32: %lld", (long long)v);
         } else {
             image_id = (uint32_t)v;
             id_ok = true;
@@ -311,8 +311,8 @@ esp_err_t mqtt_init(void)
     }
 
     /* Validação mínima da URI: esquema + host */
-    if (CONFIG_MQTT_BROKER_URI[0] == '\0') {
-        ESP_LOGE(TAG, "CONFIG_MQTT_BROKER_URI vazia em config.h");
+    if (CONFIG_LOCKMAXXING_MQTT_BROKER_URI[0] == '\0') {
+        ESP_LOGE(TAG, "CONFIG_LOCKMAXXING_MQTT_BROKER_URI vazia em config.h");
         return ESP_ERR_INVALID_ARG;
     }
 
@@ -347,10 +347,10 @@ esp_err_t mqtt_init(void)
      * 3) Cliente MQTT
      * ------------------------------------------------------------------ */
     esp_mqtt_client_config_t cfg = {
-        .broker.address.uri                  = CONFIG_MQTT_BROKER_URI,
-        .credentials.client_id               = CONFIG_MQTT_CLIENT_ID,
-        .credentials.username                = CONFIG_MQTT_USERNAME,
-        .credentials.authentication.password = CONFIG_MQTT_PASSWORD,
+        .broker.address.uri                  = CONFIG_LOCKMAXXING_MQTT_BROKER_URI,
+        .credentials.client_id               = CONFIG_LOCKMAXXING_MQTT_CLIENT_ID,
+        .credentials.username                = CONFIG_LOCKMAXXING_MQTT_USERNAME,
+        .credentials.authentication.password = CONFIG_LOCKMAXXING_MQTT_PASSWORD,
         .session.keepalive                   = CONFIG_MQTT_KEEPALIVE_S,
         .session.disable_clean_session       = false,
         .network.reconnect_timeout_ms        = CONFIG_MQTT_RECONNECT_MS,
@@ -387,7 +387,7 @@ esp_err_t mqtt_init(void)
 
     s_initialized = true;
     ESP_LOGI(TAG, "Cliente MQTT iniciado: broker='%s', client_id='%s'",
-             CONFIG_MQTT_BROKER_URI, CONFIG_MQTT_CLIENT_ID);
+             CONFIG_LOCKMAXXING_MQTT_BROKER_URI, CONFIG_LOCKMAXXING_MQTT_CLIENT_ID);
     return ESP_OK;
 
 fail:

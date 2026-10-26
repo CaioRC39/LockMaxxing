@@ -158,12 +158,13 @@ static void wifi_event_handler(void *arg,
 
         case WIFI_EVENT_STA_START:
             ESP_LOGI(TAG, "STA iniciado — conectando a '%s'",
-                     CONFIG_WIFI_SSID);
+                     CONFIG_LOCKMAXXING_WIFI_SSID);
             esp_wifi_connect();
             break;
 
         case WIFI_EVENT_STA_CONNECTED:
             ESP_LOGI(TAG, "Associado ao AP");
+            esp_wifi_set_ps(WIFI_PS_NONE); // Desativa Power Save
             xEventGroupSetBits(s_event_group, WIFI_CONNECTED_BIT);
             xEventGroupClearBits(s_event_group, WIFI_DISCONNECTED_BIT);
             break;
@@ -226,8 +227,8 @@ static void wifi_event_handler(void *arg,
 
 esp_err_t wifi_init(void)
 {
-    if (CONFIG_WIFI_SSID[0] == '\0' ||
-        strcmp(CONFIG_WIFI_SSID, "SUA_REDE_AQUI") == 0) {
+    if (CONFIG_LOCKMAXXING_WIFI_SSID[0] == '\0' ||
+        strcmp(CONFIG_LOCKMAXXING_WIFI_SSID, "SUA_REDE_AQUI") == 0) {
 
         ESP_LOGE("WIFI", "Configure o SSID da rede em main/config.h");
         return ESP_ERR_INVALID_STATE;
@@ -311,9 +312,9 @@ esp_err_t wifi_init(void)
      * snprintf garante null-terminator e trunca se necessário.
      */
     snprintf((char *)wifi_cfg.sta.ssid, sizeof(wifi_cfg.sta.ssid),
-             "%s", CONFIG_WIFI_SSID);
+             "%s", CONFIG_LOCKMAXXING_WIFI_SSID);
     snprintf((char *)wifi_cfg.sta.password, sizeof(wifi_cfg.sta.password),
-             "%s", CONFIG_WIFI_PASSWORD);
+             "%s", CONFIG_LOCKMAXXING_WIFI_PASSWORD);
 
     /*
      * WPA2-PSK cobre a maioria das redes domésticas. Se a sua rede for
@@ -356,7 +357,7 @@ esp_err_t wifi_init(void)
 
     s_initialized = true;
 
-    ESP_LOGI(TAG, "Wi-Fi inicializado — SSID='%s'", CONFIG_WIFI_SSID);
+    ESP_LOGI(TAG, "Wi-Fi inicializado — SSID='%s'", CONFIG_LOCKMAXXING_WIFI_SSID);
     return ESP_OK;
 
 fail:

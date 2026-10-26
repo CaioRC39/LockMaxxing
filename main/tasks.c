@@ -37,12 +37,19 @@
 #include "wifi.h"
 #include "mqtt.h"
 #include "actuators.h"
+#include "ota.h"
 
 /* Timeouts específicos deste módulo (não em config.h para não poluir) */
 #define TASKS_APPLY_TIMEOUT_MS      8000    /* actuator_task: 3s típ. + margem */
 #define TASKS_ERROR_RECOVERY_MS     3000    /* delay antes de ERROR → IDLE    */
 
 static const char *TAG = CONFIG_LOG_TAG_TASKS;
+
+/* Retorna true se OTA está ativamente usando a rede/flash. */
+static inline bool is_ota_busy(void)
+{
+    return g_ota_busy;    /* leitura atômica de flag volatile — não bloqueia */
+}
 
 /* =============================================================================
  * Tipos internos
@@ -421,10 +428,16 @@ static void do_send_chunked(comm_task_ctx_t *ctx)
 
     /* 2) Chunks */
     for (uint16_t i = 0; i < total_chunks; i++) {
+        /* Se OTA começou no meio do envio, aborta o resto. */
+        if (is_ota_busy()) {
+            ESP_LOGW(TAG, "OTA começou no meio do envio (chunk %u/%u) — abortando",
+                     (unsigned)(i + 1), (unsigned)total_chunks);
+            goto fail;
+        }
+
         size_t offset    = (size_t)i * CONFIG_MQTT_CHUNK_SIZE;
         size_t remaining = frame->len - offset;
-        size_t chunk_len = (remaining > CONFIG_MQTT_CHUNK_SIZE)
-                           ? CONFIG_MQTT_CHUNK_SIZE : remaining;
+        size_t chunk_len = (remaining > CONFIG_MQTT_CHUNK_SIZE) ? (CONFIG_MQTT_CHUNK_SIZE) : (remaining);
 
         err = mqtt_publish_chunk(image_id, i, total_chunks,
                                  frame->buf + offset, chunk_len);
@@ -648,7 +661,7 @@ static TickType_t compute_state_timeout(comm_task_ctx_t *ctx)
 
     switch (sm_get_state()) {
     case SM_STATE_IDLE:
-        timeout_ticks = pdMS_TO_TICKS(CONFIG_CAPTURE_INTERVAL_MS);
+        timeout_ticks = pdMS_TO_TICKS(CONFIG_LOCKMAXXING_CAPTURE_INTERVAL_MS);
         break;
     case SM_STATE_CAPTURING:
         timeout_ticks = pdMS_TO_TICKS(CONFIG_CAMERA_CAPTURE_TIMEOUT_MS);
@@ -675,49 +688,54 @@ static void check_state_timeouts(comm_task_ctx_t *ctx)
     TickType_t elapsed = now - ctx->state_start_tick;
 
     switch (sm_get_state()) {
-    case SM_STATE_IDLE:
-        if (elapsed >= pdMS_TO_TICKS(CONFIG_CAPTURE_INTERVAL_MS)) {
-            if (mqtt_is_connected()) {
-                ESP_LOGI(TAG, "Timer de captura expirou — disparando ciclo");
-                sm_process_event(SM_EVENT_TRIGGER_CAPTURE);
-            } else {
-                /* Sem rede: não faz sentido capturar. Reinicia o timer. */
-                ESP_LOGD(TAG, "Timer expirou mas MQTT offline — adiando");
-                ctx->state_start_tick = now;
+        case SM_STATE_IDLE:
+            if (elapsed >= pdMS_TO_TICKS(CONFIG_LOCKMAXXING_CAPTURE_INTERVAL_MS)) {
+                if (is_ota_busy()) {
+                    /* OTA vai reiniciar em breve, não vale a pena capturar. */
+                    ctx->state_start_tick = now;
+                    break;
+                }
+                if (mqtt_is_connected()) {
+                    ESP_LOGI(TAG, "Timer de captura expirou — disparando ciclo");
+                    sm_process_event(SM_EVENT_TRIGGER_CAPTURE);
+                } else {
+                    /* Sem rede: não faz sentido capturar. Reinicia o timer. */
+                    ESP_LOGD(TAG, "Timer expirou mas MQTT offline — adiando");
+                    ctx->state_start_tick = now;
+                }
             }
-        }
-        break;
+            break;
 
-    case SM_STATE_CAPTURING:
-        if (elapsed >= pdMS_TO_TICKS(CONFIG_CAMERA_CAPTURE_TIMEOUT_MS)) {
-            ESP_LOGW(TAG, "Timeout aguardando frame da câmera");
-            sm_process_event(SM_EVENT_CAPTURE_TIMEOUT);
-        }
-        break;
+        case SM_STATE_CAPTURING:
+            if (elapsed >= pdMS_TO_TICKS(CONFIG_CAMERA_CAPTURE_TIMEOUT_MS)) {
+                ESP_LOGW(TAG, "Timeout aguardando frame da câmera");
+                sm_process_event(SM_EVENT_CAPTURE_TIMEOUT);
+            }
+            break;
 
-    case SM_STATE_WAITING:
-        if (elapsed >= pdMS_TO_TICKS(CONFIG_MQTT_RESULT_TIMEOUT_MS)) {
-            ESP_LOGW(TAG, "Timeout aguardando resultado do servidor");
-            sm_process_event(SM_EVENT_RESULT_TIMEOUT);
-        }
-        break;
+        case SM_STATE_WAITING:
+            if (elapsed >= pdMS_TO_TICKS(CONFIG_MQTT_RESULT_TIMEOUT_MS)) {
+                ESP_LOGW(TAG, "Timeout aguardando resultado do servidor");
+                sm_process_event(SM_EVENT_RESULT_TIMEOUT);
+            }
+            break;
 
-    case SM_STATE_APPLYING:
-        if (elapsed >= pdMS_TO_TICKS(TASKS_APPLY_TIMEOUT_MS)) {
-            ESP_LOGW(TAG, "Timeout aguardando actuator_task");
-            sm_process_event(SM_EVENT_ABORT);
-        }
-        break;
+        case SM_STATE_APPLYING:
+            if (elapsed >= pdMS_TO_TICKS(TASKS_APPLY_TIMEOUT_MS)) {
+                ESP_LOGW(TAG, "Timeout aguardando actuator_task");
+                sm_process_event(SM_EVENT_ABORT);
+            }
+            break;
 
-    case SM_STATE_ERROR:
-        if (elapsed >= pdMS_TO_TICKS(TASKS_ERROR_RECOVERY_MS)) {
-            ESP_LOGI(TAG, "Recuperação concluída: ERROR → IDLE");
-            sm_process_event(SM_EVENT_RESET);
-        }
-        break;
+        case SM_STATE_ERROR:
+            if (elapsed >= pdMS_TO_TICKS(TASKS_ERROR_RECOVERY_MS)) {
+                ESP_LOGI(TAG, "Recuperação concluída: ERROR → IDLE");
+                sm_process_event(SM_EVENT_RESET);
+            }
+            break;
 
-    default:
-        break;
+        default:
+            break;
     }
 }
 
@@ -736,18 +754,45 @@ static void comm_task(void *arg)
     s_comm_ctx.state_start_tick = xTaskGetTickCount();
 
     while (true) {
-        /* 1) Bloqueia pela duração do timeout do estado atual */
+        /* ---------------------------------------------------------------------
+         * OTA em andamento: aborta qualquer ciclo ativo e dorme.
+         * Sem isso, a comm_task compete com o upload (WiFi + flash) e
+         * o OTA fica 3x mais lento (66s em vez de ~20s).
+         * ------------------------------------------------------------------ */
+        if (is_ota_busy()) {
+            sm_state_t cur = sm_get_state();
+            if (cur != SM_STATE_INIT && cur != SM_STATE_IDLE &&
+                cur != SM_STATE_ERROR) {
+                ESP_LOGW(TAG, "OTA ativa — abortando ciclo (estado=%s)",
+                         sm_get_state_name(cur));
+                if (s_comm_ctx.pending_frame != NULL) {
+                    camera_release(s_comm_ctx.pending_frame);
+                    s_comm_ctx.pending_frame = NULL;
+                }
+                sm_process_event(SM_EVENT_ABORT);
+                handle_transitions(&s_comm_ctx);
+            }
+            vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
+
+        /* ---------------------------------------------------------------------
+         * Loop normal — só executa quando NÃO há OTA ativa.
+         * ------------------------------------------------------------------ */
+
+        /* 1) Bloqueia pela duração do timeout do estado atual. */
         TickType_t wait = compute_state_timeout(&s_comm_ctx);
 
+        /* 2) Espera por mensagem (ou timeout). */
         comm_msg_t msg;
         if (xQueueReceive(s_comm_msg_queue, &msg, wait) == pdTRUE) {
             process_comm_msg(&s_comm_ctx, &msg);
         }
 
-        /* 2) Checa timeouts do estado (pode emitir eventos) */
+        /* 3) Checa timeouts do estado (pode emitir eventos). */
         check_state_timeouts(&s_comm_ctx);
 
-        /* 3) Consome todas as transições pendentes */
+        /* 4) Consome todas as transições pendentes. */
         handle_transitions(&s_comm_ctx);
     }
 }

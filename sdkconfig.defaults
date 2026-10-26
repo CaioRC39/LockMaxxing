@@ -56,7 +56,7 @@ CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=16384
 CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
 
 # Habilita o comando "heap_caps" para debug (útil durante desenvolvimento).
-CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+#CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 
 # -----------------------------------------------------------------------------
 # CPU — Frequência e cache
@@ -240,3 +240,11 @@ CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 # Se o firmware não chamar esp_ota_mark_app_valid_cancel_rollback(), o
 # bootloader pode considerar a imagem como não confirmada e reverter.
 CONFIG_BOOTLOADER_APP_ROLLBACK_CONFIRM_ON_STARTUP=y
+
+# -----------------------------------------------------------------------------
+# FORMATAÇÃO DE STRINGS
+# -----------------------------------------------------------------------------
+# Como não são usados float, é possível remover o uso de certas funções
+# evitando com que haja um consumo muito alto de processamento e
+# armazenamento desnecessário.
+CONFIG_NEWLIB_NANO_FORMAT=y

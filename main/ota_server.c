@@ -22,6 +22,8 @@
  *   PARTE 3/3 — API pública e montagem final
  * ========================================================================== */
 
+#include "cJSON.h"
+ #include "ota.h"
 #include "ota_internal.h"
 
 #include "sdkconfig.h"
@@ -101,6 +103,12 @@ static uint8_t s_upload_buf[OTA_SERVER_BUF_SIZE];
 static StaticSemaphore_t s_upload_buf_mutex_buf;
 static SemaphoreHandle_t s_upload_buf_mutex = NULL;
 
+// Protótipos
+/* Forward decl — precisa existir antes de ser usada em httpd_uri_t. */
+static esp_err_t update_post_handler(httpd_req_t *req);
+static esp_err_t pull_ota_post_handler(httpd_req_t *req);
+static esp_err_t status_get_handler(httpd_req_t *req);
+
 /* -----------------------------------------------------------------------------
  * Helpers de resposta HTTP
  * -------------------------------------------------------------------------- */
@@ -134,9 +142,6 @@ static esp_err_t send_json_ok(httpd_req_t *req, const char *body)
 /* -----------------------------------------------------------------------------
  * Handler POST /update
  * -------------------------------------------------------------------------- */
-
-/* Forward decl — precisa existir antes de ser usada em httpd_uri_t. */
-static esp_err_t update_post_handler(httpd_req_t *req);
 
  static const httpd_uri_t uri_post_update = {
     .uri      = "/update",
@@ -390,8 +395,6 @@ cleanup:
  * Handler GET /status
  * -------------------------------------------------------------------------- */
 
-static esp_err_t status_get_handler(httpd_req_t *req);
-
 static const httpd_uri_t uri_get_status = {
     .uri      = "/status",
     .method   = HTTP_GET,
@@ -583,6 +586,100 @@ static void log_listen_address(uint16_t port)
                       "--insecure no cliente Python");
 }
 
+#if CONFIG_LOCKMAXXING_OTA_PULL_ENDPOINT_ENABLE
+
+/* Callback do pull OTA. Roda na task do ota_client (prioridade 5). */
+static void pull_ota_result_cb(esp_err_t result, const char *msg)
+{
+    if (result == ESP_OK) {
+        ESP_LOGI(TAG_SRV, "Pull OTA aplicada — reboot em 2s");
+        vTaskDelay(pdMS_TO_TICKS(2000));
+        esp_restart();
+    } else {
+        ESP_LOGE(TAG_SRV, "Pull OTA falhou: %s", msg);
+    }
+}
+
+static esp_err_t pull_ota_post_handler(httpd_req_t *req)
+{
+    /* Warmup */
+    int64_t uptime_s = esp_timer_get_time() / 1000000;
+    if (uptime_s < CONFIG_LOCKMAXXING_OTA_WARMUP_S) {
+        int remaining = CONFIG_LOCKMAXXING_OTA_WARMUP_S - (int)uptime_s;
+        ESP_LOGW(TAG_SRV, "pull-ota rejeitada: warmup (uptime=%llds, faltam %ds)",
+                 (long long)uptime_s, remaining);
+        char body[128];
+        snprintf(body, sizeof(body),
+                 "{\"error\":\"warmup\",\"uptime_s\":%lld,\"retry_in_s\":%d}",
+                 (long long)uptime_s, remaining);
+        httpd_resp_set_status(req, "503 Service Unavailable");
+        httpd_resp_set_hdr(req, "Retry-After", "60");
+        httpd_resp_set_type(req, "application/json");
+        return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
+    }
+
+    /* Lê o corpo em loop (garante receber tudo, mesmo se vier em pedaços) */
+    char body[512];
+    int total = 0;
+    while (total < req->content_len) {
+        int n = httpd_req_recv(req, body + total, req->content_len - total);
+        if (n <= 0) {
+            ESP_LOGE(TAG_SRV, "pull-ota: recv falhou (n=%d)", n);
+            return send_json_error(req, 500, "recv failed");
+        }
+        total += n;
+    }
+    if (total >= (int)sizeof(body)) {
+        return send_json_error(req, 413, "body too large");
+    }
+    body[total] = '\0';
+
+    /* Parse JSON */
+    cJSON *root = cJSON_Parse(body);
+    if (root == NULL) {
+        return send_json_error(req, 400, "invalid json");
+    }
+    cJSON *url_item = cJSON_GetObjectItem(root, "url");
+    cJSON *sha_item = cJSON_GetObjectItem(root, "sha256");
+    if (!cJSON_IsString(url_item) || !cJSON_IsString(sha_item)) {
+        cJSON_Delete(root);
+        return send_json_error(req, 400, "missing url or sha256");
+    }
+
+    /* Copia strings antes de liberar cJSON */
+    char url[256];
+    char sha[80];
+    snprintf(url, sizeof(url), "%s", url_item->valuestring);
+    snprintf(sha, sizeof(sha), "%s", sha_item->valuestring);
+    cJSON_Delete(root);
+
+    ESP_LOGI(TAG_SRV, "Pull OTA: url=%s", url);
+
+    /* Verifica se já há OTA em andamento */
+    if (g_ota_busy) {
+        return send_json_error(req, 409, "ota already in progress");
+    }
+
+    /* Dispara */
+    esp_err_t err = ota_https_update_start(url, sha, NULL, pull_ota_result_cb);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG_SRV, "ota_https_update_start falhou: %s",
+                 esp_err_to_name(err));
+        return send_json_error(req, 500, "failed to start pull");
+    }
+
+    return send_json_ok(req, "{\"status\":\"started\"}");
+}
+
+static const httpd_uri_t uri_post_pull_ota = {
+    .uri      = "/pull-ota",
+    .method   = HTTP_POST,
+    .handler  = pull_ota_post_handler,
+    .user_ctx = NULL,
+};
+
+#endif /* CONFIG_LOCKMAXXING_OTA_PULL_ENDPOINT_ENABLE */
+
 /* -----------------------------------------------------------------------------
  * API pública — start
  * -------------------------------------------------------------------------- */
@@ -655,11 +752,22 @@ esp_err_t ota_local_server_start(uint16_t port)
         goto fail_httpd;
     }
 
+#if CONFIG_LOCKMAXXING_OTA_PULL_ENDPOINT_ENABLE
+    err = register_handler(server, &uri_post_pull_ota);
+    if (err != ESP_OK) {
+        goto fail_httpd;
+    }
+#endif
+
     /* 7) Publica globais apenas após sucesso total. */
     g_httpd      = server;
     g_server_port = port;
 
     log_listen_address(port);
+    
+#if CONFIG_LOCKMAXXING_OTA_PULL_ENDPOINT_ENABLE
+    ESP_LOGI(TAG_SRV, "  POST /pull-ota (JSON url+sha256)");
+#endif
 
     return ESP_OK;
 

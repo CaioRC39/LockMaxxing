@@ -25,7 +25,8 @@
  *   PARTE 3/3 — ota_client_task() + ota_https_update_start() (público)
  * ========================================================================== */
 
-#include "ota_internal.h"
+#include "certs.h"
+ #include "ota_internal.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,6 +39,8 @@
 #include "esp_http_client.h"
 #include "esp_crt_bundle.h"
 #include "freertos/task.h"
+
+#include "sdkconfig.h"
 
 /* -----------------------------------------------------------------------------
  * Constantes
@@ -153,14 +156,25 @@ static esp_err_t ota_client_perform_download(const ota_client_ctx_t *ctx,
     esp_http_client_config_t cfg = {
         .url               = ctx->url,
         .method            = HTTP_METHOD_GET,
-        .crt_bundle_attach = esp_crt_bundle_attach,   /* valida cadeia TLS */
+#if CONFIG_LOCKMAXXING_OTA_PULL_USE_LOCAL_CERT
+        /* Modo dev/test: verifica contra o próprio cert do serve (certs.h),
+         * em vez de CA pública. Não é "skip" — é "pin" para o cert local.
+         * Funciona com auto-assinado e previne MITM (atacante precisaria
+         * da chave privada do certs.h). */
+        .crt_bundle_attach            = NULL,
+        .cert_pem                     = SERVER_CERT_PEM,
+        .common_name                 = "esp32-camera.local",
+        .skip_cert_common_name_check  = false,
+#else
+        /* Produção: verifica contra CA raiz pública (Let's Encrypt, etc.). */
+        .crt_bundle_attach = esp_crt_bundle_attach,
+#endif
         .timeout_ms        = OTA_CLIENT_HTTP_TIMEOUT_MS,
         .buffer_size       = OTA_CLIENT_BUF_SIZE,
         .buffer_size_tx    = 512,
         .keep_alive_enable = true,
         .disable_auto_redirect   = false,
         .max_redirection_count   = 5,
-        /* user_agent ajuda o servidor a identificar o cliente nos logs */
         .user_agent        = "esp32-camera-mqtt/1.0",
     };
 

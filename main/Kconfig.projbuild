@@ -52,4 +52,24 @@ menu "LockMaxxing Configuration"
             Evita conflito com DHCP/TLS/slow-start durante inicialização.
             0 desabilita a checagem.
 
+    config LOCKMAXXING_OTA_PULL_ENDPOINT_ENABLE
+        bool "Habilitar endpoint /pull-ota (DEV/TEST ONLY)"
+        default y
+        help
+            Adiciona POST /pull-ota ao servidor HTTPS local. Recebe
+            {"url":"...","sha256":"..."} e dispara OTA pull.
+
+            ATENÇÃO: em produção, DESABILITE. Qualquer um na rede pode
+            enviar firmware com este endpoint ativo.
+
+    config LOCKMAXXING_OTA_PULL_USE_LOCAL_CERT
+        bool "Usar cert do serve para validar pull (DEV/TEST)"
+        default n
+        help
+            Verifica o servidor de pull contra o cert embutido em certs.h
+            (o mesmo usado pelo tools/ota_test_server.py serve).
+
+            Use em bancada. Em produção, aponte o pull para um servidor
+            com cert de CA pública e desabilite esta opção.
+
 endmenu

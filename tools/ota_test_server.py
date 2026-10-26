@@ -52,6 +52,7 @@ import ssl
 import sys
 import urllib.error
 import urllib.request
+from urllib.parse import urlparse
 from pathlib import Path
 
 # =============================================================================
@@ -151,18 +152,36 @@ class BinHandler(http.server.SimpleHTTPRequestHandler):
     serve_url_path: str = ""
 
     def do_GET(self):  # noqa: N802 — nome exigido pela stdlib
-        if self.path != f"/{self.serve_url_path}" and self.path != "/":
+        # Rotas permitidas
+        allowed = (f"/{self.serve_url_path}", "/", "/status")
+        if self.path not in allowed:
             self.send_error(404, "Not found")
             return
 
+        # /status → JSON com metadados (usado pelo modo pull)
+        if self.path == "/status":
+            body = json.dumps({
+                "filename": self.serve_url_path,
+                "sha256":   self.sha256_hex,
+                "size":     self.bin_path.stat().st_size,
+                "url":      f"https://{self.headers.get('Host', 'localhost')}/{self.serve_url_path}",
+            }).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
+
+        # / → página índice
         if self.path == "/":
-            # Lista simples
             body = (
                 f"OTA Test Server\n"
                 f"File: {self.serve_url_path}\n"
                 f"SHA-256: {self.sha256_hex}\n"
                 f"Size: {self.bin_path.stat().st_size} bytes\n"
                 f"\nGET /{self.serve_url_path} to download\n"
+                f"GET /status for metadata (JSON)\n"
             ).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "text/plain; charset=utf-8")
@@ -171,7 +190,7 @@ class BinHandler(http.server.SimpleHTTPRequestHandler):
             self.wfile.write(body)
             return
 
-        # Download do .bin
+        # /<nome.bin> → download do firmware
         size = self.bin_path.stat().st_size
         print(f"[SERVE] Cliente conectou: {self.client_address[0]}")
         print(f"[SERVE] Enviando {file_size_human(size)} ({self.serve_url_path})")
@@ -194,6 +213,23 @@ class BinHandler(http.server.SimpleHTTPRequestHandler):
             print(f"[SERVE] Envio concluído")
         except (BrokenPipeError, ConnectionResetError) as exc:
             print(f"[SERVE] Conexão interrompida: {exc}")
+
+    def do_POST(self):  # noqa: N802 — nome exigido pela stdlib
+        # Este é o serve (PC). POST pertence ao ESP32 (endpoint /pull-ota),
+        # não ao servidor de arquivos.
+        msg = (
+            f"POST não suportado neste servidor.\n"
+            f"Este é o OTA test server (serve de arquivos).\n"
+            f"O POST /pull-ota deve ir para o ESP32, não para o PC.\n"
+            f"Verifique o --device no comando 'pull'.\n"
+        )
+        body = msg.encode("utf-8")
+        self.send_response(405)  # Method Not Allowed
+        self.send_header("Allow", "GET")
+        self.send_header("Content-Type", "text/plain; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
 
     def log_message(self, fmt, *args):
         # Silencia o log padrão (spam de cada request)
@@ -354,6 +390,92 @@ def cmd_push(args) -> int:
         print(f"[PUSH] Verifique se o servidor HTTPS local está rodando (log: OTA_SRV)", file=sys.stderr)
         return 1
 
+# =============================================================================
+# Modo PULL — busca o .bin de um servidor HTTPS
+# =============================================================================
+
+def cmd_pull(args) -> int:
+    if args.from_url:
+        serve_url = args.from_url
+    elif args.host:
+        serve_url = f"https://{args.host}:{args.from_port}/LockMaxxing.bin"
+    else:
+        print("[PULL] ERRO: informe --from <url> ou --host <ip>", file=sys.stderr)
+        return 2
+
+    # Normaliza: se não tem caminho, assume /LockMaxxing.bin
+    from urllib.parse import urlparse
+    parsed = urlparse(serve_url)
+    if not parsed.path or parsed.path == "/":
+        serve_url = f"{parsed.scheme}://{parsed.netloc}/LockMaxxing.bin"
+
+    # Busca SHA256 do servidor serve, a menos que o usuário forneça
+    sha256_hex = args.sha256
+    if not sha256_hex:
+        base = f"{parsed.scheme}://{parsed.netloc}"
+        status_url = f"{base}/status"
+        print(f"[PULL] Buscando SHA256 em {status_url}")
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        try:
+            with urllib.request.urlopen(status_url, context=ctx, timeout=10) as r:
+                info = json.loads(r.read())
+                sha256_hex = info["sha256"]
+                print(f"[PULL] SHA-256: {sha256_hex}")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[PULL] ERRO ao obter SHA256: {exc}", file=sys.stderr)
+            print("[PULL] Use --sha256 <hex> para especificar manualmente", file=sys.stderr)
+            return 1
+
+    # Validação: --device não pode ser o mesmo host do serve
+    if parsed.hostname == args.device:
+        print(f"[PULL] ERRO: --device ({args.device}) é o mesmo host do serve.", file=sys.stderr)
+        print("[PULL] Você está tentando enviar POST ao PC em vez do ESP32?", file=sys.stderr)
+        print("[PULL] --device deve ser o IP do ESP32 (ex: 192.168.15.7)", file=sys.stderr)
+        return 1
+
+    # POST no /pull-ota do ESP32
+    esp_url = f"https://{args.device}:{args.port}/pull-ota"
+    payload = json.dumps({"url": serve_url, "sha256": sha256_hex}).encode("utf-8")
+    print(f"[PULL] Serve (fonte do .bin): {serve_url}")
+    print(f"[PULL] ESP32 (destino do POST): {esp_url}")
+
+    ctx_esp = ssl.create_default_context()
+    ctx_esp.check_hostname = False
+    ctx_esp.verify_mode = ssl.CERT_NONE
+
+    req = urllib.request.Request(
+        esp_url,
+        data=payload,
+        method="POST",
+        headers={"Content-Type": "application/json"},
+    )
+
+    try:
+        with urllib.request.urlopen(req, context=ctx_esp, timeout=15) as resp:
+            body = resp.read().decode("utf-8", errors="replace")
+            print(f"[PULL] HTTP {resp.status} {resp.reason}")
+            print(f"[PULL] Resposta: {body}")
+            if resp.status == 200:
+                print("[PULL] Pull iniciado — o ESP32 baixará o firmware em background")
+                print("[PULL] Acompanhe o monitor serial (reboot em ~N segundos)")
+                return 0
+            return 1
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        if exc.code == 503:
+            try:
+                info = json.loads(body)
+                print(f"[PULL] Servidor em warmup. Tente em ~{info.get('retry_in_s', 60)}s.")
+                return 1
+            except json.JSONDecodeError:
+                pass
+        print(f"[PULL] HTTP {exc.code}: {body}", file=sys.stderr)
+        return 1
+    except Exception as exc:  # noqa: BLE001
+        print(f"[PULL] Erro de conexão: {exc}", file=sys.stderr)
+        return 1
 
 # =============================================================================
 # Modo SHA256
@@ -399,6 +521,22 @@ def build_argparser() -> argparse.ArgumentParser:
     pu.add_argument("--dry-run", action="store_true",
                     help="Não envia, apenas mostra o que faria")
     pu.set_defaults(func=cmd_push)
+
+    # --- pull ---
+    pl = sub.add_parser("pull", help="Dispara OTA pull no ESP32")
+    pl.add_argument("--device", required=True,
+                    help="IP do ESP32 (ex: 192.168.15.7)")
+    pl.add_argument("--port", type=int, default=8443,
+                    help="Porta HTTPS do ESP32")
+    pl.add_argument("--from", dest="from_url", default=None,
+                    help="URL completa do .bin (ex: https://192.168.15.5:8443/LockMaxXing.bin)")
+    pl.add_argument("--host", default=None,
+                    help="IP do PC rodando serve (alternativa a --from)")
+    pl.add_argument("--from-port", type=int, default=8443,
+                    help="Porta do serve (usado com --host)")
+    pl.add_argument("--sha256", default=None,
+                    help="SHA-256 hex (opcional, busca do serve se omitido)")
+    pl.set_defaults(func=cmd_pull)
 
     # --- sha256 ---
     sh = sub.add_parser("sha256", help="Calcula SHA-256 de um arquivo")

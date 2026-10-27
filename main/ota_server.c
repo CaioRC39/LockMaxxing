@@ -42,6 +42,11 @@
 #include "freertos/semphr.h"
 
 #include "psa/crypto.h"
+#include "lwip/sockets.h"   /* getpeername, sockaddr_storage */
+#include "lwip/inet.h"      /* struct in_addr, struct in6_addr */
+
+#include "esp_https_server.h"
+#include "app_config.h" 
 
 /* Certificado gerado pelo build (ver tools/gen_cert.sh + main/CMakeLists.txt). */
 #include "certs.h"
@@ -108,6 +113,8 @@ static SemaphoreHandle_t s_upload_buf_mutex = NULL;
 static esp_err_t update_post_handler(httpd_req_t *req);
 static esp_err_t pull_ota_post_handler(httpd_req_t *req);
 static esp_err_t status_get_handler(httpd_req_t *req);
+static esp_err_t factory_reset_handler(httpd_req_t *req);
+static esp_err_t admin_config_handler(httpd_req_t *req); 
 
 /* -----------------------------------------------------------------------------
  * Helpers de resposta HTTP
@@ -139,6 +146,367 @@ static esp_err_t send_json_ok(httpd_req_t *req, const char *body)
     return httpd_resp_send(req, body, HTTPD_RESP_USE_STRLEN);
 }
 
+/* Comparação de strings em tempo constante.
+ *
+ * Um strcmp() normal retorna assim que encontra a primeira diferença.
+ * Isso vaza informação: um atacante pode medir o tempo de resposta para
+ * descobrir o token caractere por caractere ("timing attack").
+ *
+ * Esta função sempre percorre a string inteira, mesmo se encontrar
+ * diferenças no começo. O custo é desprezível (dezenas de ciclos) e
+ * elimina a classe de ataque.
+ *
+ * Fonte: técnica clássica de "constant-time comparison" (usada em
+ * bibliotecas de criptografia como NaCl e libsodium). */
+static bool token_equals_secure(const char *a, const char *b)
+{
+    if (a == NULL || b == NULL) {
+        return false;
+    }
+    size_t la = strlen(a);
+    size_t lb = strlen(b);
+    if (la != lb) {
+        return false;
+    }
+    unsigned char diff = 0;
+    for (size_t i = 0; i < la; i++) {
+        diff |= (unsigned char)(a[i] ^ b[i]);
+    }
+    return diff == 0;
+}
+
+/* =============================================================================
+ * Rate limiting per IP — proteção contra força bruta e spam
+ * =============================================================================
+ *
+ * Estratégia:
+ *   - Tabela fixa de N IPs (evita alocação dinâmica)
+ *   - Cada entrada guarda: IP, contador, timestamp do início da janela
+ *   - Ao receber requisição:
+ *       1. Busca entrada do IP
+ *       2. Se não existe, reusa a mais antiga (LRU implícito)
+ *       3. Se janela expirou, reseta contador
+ *       4. Incrementa, compara com limite
+ *
+ * Por que spinlock:
+ *   - Seção crítica é minúscula (poucas comparações, sem I/O)
+ *   - Não bloqueia o scheduler
+ *   - Por segurança: mesmo que o httpd deixe de ser single-thread no
+ *     futuro, o código já está correto
+ * ========================================================================== */
+
+#define RATE_LIMIT_TABLE_SIZE   8    /* até 8 IPs rastreados simultaneamente */
+
+typedef struct {
+    uint32_t ip_addr;           /* IPv4 em network byte order; 0 = vazio */
+    uint32_t count;             /* requisições na janela atual */
+    int64_t  window_start_us;   /* timestamp do início da janela */
+} rate_limit_entry_t;
+
+static rate_limit_entry_t s_rate_limit[RATE_LIMIT_TABLE_SIZE];
+static portMUX_TYPE       s_rate_lock = portMUX_INITIALIZER_UNLOCKED;
+
+/*
+ * Extrai o IP de origem do request. Retorna 0 se não conseguir
+ * (nesse caso, o rate limit é permitido — fail-open, porque preferimos
+ * não bloquear um cliente legítimo por um erro de introspecção).
+ *
+ * Funciona com IPv4 puro e IPv4-mapped IPv6 (::ffff:a.b.c.d), que é
+ * o formato mais comum quando o cliente usa dual-stack.
+ */
+static uint32_t get_client_ip(httpd_req_t *req)
+{
+    int fd = httpd_req_to_sockfd(req);
+    if (fd < 0) return 0;
+
+    struct sockaddr_storage peer;
+    socklen_t peer_len = sizeof(peer);
+
+    if (getpeername(fd, (struct sockaddr *)&peer, &peer_len) != 0) {
+        return 0;
+    }
+
+    if (peer.ss_family == AF_INET) {
+        struct sockaddr_in *v4 = (struct sockaddr_in *)&peer;
+        return v4->sin_addr.s_addr;
+    }
+    if (peer.ss_family == AF_INET6) {
+        struct sockaddr_in6 *v6 = (struct sockaddr_in6 *)&peer;
+        /* IPv4-mapped IPv6: prefixo ::ffff: */
+        const uint8_t *a = v6->sin6_addr.s6_addr;
+        bool is_mapped =
+            a[0] == 0 && a[1] == 0 && a[2] == 0 && a[3] == 0 &&
+            a[4] == 0 && a[5] == 0 && a[6] == 0 && a[7] == 0 &&
+            a[8] == 0 && a[9] == 0 && a[10] == 0xFF && a[11] == 0xFF;
+        if (is_mapped) {
+            uint32_t ip;
+            memcpy(&ip, &a[12], 4);
+            return ip;
+        }
+        /* IPv6 puro: usa hash dos primeiros 4 bytes (colisões são OK
+         * para rate limiting — dois IPs diferentes podem compartilhar
+         * a cota por minuto, mas é uma cota pequena, sem grande impacto). */
+        uint32_t ip;
+        memcpy(&ip, &a[0], 4);
+        return ip;
+    }
+    return 0;
+}
+
+/*
+ * Retorna true se a requisição é permitida, false se deve ser rejeitada.
+ *
+ * Fail-open: se get_client_ip() retornar 0 (falha de introspecção),
+ * permite a requisição. Preferimos errar para o lado de não bloquear.
+ */
+static bool rate_limit_check(httpd_req_t *req)
+{
+    uint32_t ip = get_client_ip(req);
+    if (ip == 0) {
+        return true;    /* fail-open: não conseguiu identificar cliente */
+    }
+
+    int64_t now_us = esp_timer_get_time();
+    int64_t window_us = (int64_t)CONFIG_LOCKMAXXING_RATE_LIMIT_WINDOW_S * 1000000LL;
+
+    bool allowed;
+    uint32_t count_after;
+
+    portENTER_CRITICAL(&s_rate_lock);
+
+    /* 1) Busca entrada do IP; se não existe, escolhe a mais antiga (LRU) */
+    int slot = -1;
+    int oldest_slot = 0;
+    int64_t oldest_start = INT64_MAX;
+
+    for (int i = 0; i < RATE_LIMIT_TABLE_SIZE; i++) {
+        if (s_rate_limit[i].ip_addr == ip) {
+            slot = i;
+            break;
+        }
+        if (s_rate_limit[i].window_start_us < oldest_start) {
+            oldest_start = s_rate_limit[i].window_start_us;
+            oldest_slot = i;
+        }
+    }
+
+    if (slot < 0) {
+        slot = oldest_slot;
+        s_rate_limit[slot].ip_addr         = ip;
+        s_rate_limit[slot].count           = 0;
+        s_rate_limit[slot].window_start_us = now_us;
+    }
+
+    /* 2) Janela expirou? Reset do contador */
+    if ((now_us - s_rate_limit[slot].window_start_us) > window_us) {
+        s_rate_limit[slot].count           = 0;
+        s_rate_limit[slot].window_start_us = now_us;
+    }
+
+    /* 3) Incrementa e decide */
+    s_rate_limit[slot].count++;
+    count_after = s_rate_limit[slot].count;
+    allowed = (count_after <= CONFIG_LOCKMAXXING_RATE_LIMIT_MAX);
+
+    portEXIT_CRITICAL(&s_rate_lock);
+
+    if (!allowed) {
+        /* Loga IPv4 legível. ip_addr está em network byte order. */
+        const uint8_t *b = (const uint8_t *)&ip;
+        ESP_LOGW(TAG_SRV, "Rate limit excedido: %u.%u.%u.%u "
+                          "(%u req / %d s)",
+                 b[0], b[1], b[2], b[3],
+                 (unsigned)count_after,
+                 CONFIG_LOCKMAXXING_RATE_LIMIT_WINDOW_S);
+    }
+    return allowed;
+}
+
+/* Resposta HTTP 429 padronizada, com Retry-After no header. */
+static esp_err_t send_rate_limited(httpd_req_t *req)
+{
+    httpd_resp_set_status(req, "429 Too Many Requests");
+    httpd_resp_set_hdr(req, "Retry-After",
+                       "60");   /* aviso: retry em 60 s */
+    httpd_resp_set_hdr(req, "Connection", "close");
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, "{\"error\":\"rate limited\"}",
+                           HTTPD_RESP_USE_STRLEN);
+}
+
+/* =============================================================================
+ * POST /admin/config — Reconfiguração remota autenticada
+ * =============================================================================
+ *
+ * Body (JSON): todos os campos são opcionais.
+ *   {
+ *     "broker":        "mqtt://192.168.15.5:1883",   (opcional)
+ *     "wifi_ssid":     "NovaRede",                   (opcional)
+ *     "wifi_password": "NovaSenha",                  (opcional)
+ *   }
+ *
+ * Headers obrigatórios:
+ *   X-Admin-Token: <token configurado em CONFIG_LOCKMAXXING_ADMIN_TOKEN>
+ *   Content-Type:  application/json
+ *
+ * Respostas:
+ *   200 OK          {"status":"ok","action":"rebooting"}
+ *   400 Bad Request campos inválidos ou JSON malformado
+ *   401 Unauthorized token ausente ou inválido
+ *   500 Internal   falha ao salvar na NVS
+ *   503 Service    endpoint desabilitado (token não configurado)
+ * ========================================================================== */
+
+static esp_err_t admin_config_handler(httpd_req_t *req)
+{
+    if (!rate_limit_check(req))
+        return send_rate_limited(req);
+    
+    ESP_LOGW(TAG_SRV, "===== Admin config request =====");
+
+    /* -------------------------------------------------------------------------
+     * 1) Guard: o endpoint só funciona se o token foi configurado
+     * ---------------------------------------------------------------------- */
+    if (CONFIG_LOCKMAXXING_ADMIN_TOKEN[0] == '\0') {
+        ESP_LOGW(TAG_SRV, "Endpoint desabilitado (token não configurado "
+                          "em menuconfig)");
+        return send_json_error(req, 503, "admin endpoint disabled");
+    }
+
+    /* -------------------------------------------------------------------------
+     * 2) Valida o header X-Admin-Token
+     * ---------------------------------------------------------------------- */
+    char token[128];
+    size_t token_len = sizeof(token);
+    if (httpd_req_get_hdr_value_str(req, "X-Admin-Token",
+                                     token, token_len) != ESP_OK) {
+        ESP_LOGW(TAG_SRV, "Token ausente");
+        return send_json_error(req, 401, "unauthorized");
+    }
+
+    if (!token_equals_secure(token, CONFIG_LOCKMAXXING_ADMIN_TOKEN)) {
+        ESP_LOGW(TAG_SRV, "Token inválido (len=%zu)", token_len);
+        return send_json_error(req, 401, "unauthorized");
+    }
+
+    /* -------------------------------------------------------------------------
+     * 3) Lê e parseia o corpo JSON
+     * ---------------------------------------------------------------------- */
+    char body[512];
+    int n = httpd_req_recv(req, body, sizeof(body) - 1);
+    if (n <= 0) {
+        ESP_LOGW(TAG_SRV, "Corpo vazio ou erro de leitura (n=%d)", n);
+        return send_json_error(req, 400, "empty body");
+    }
+    body[n] = '\0';
+
+    cJSON *root = cJSON_Parse(body);
+    if (root == NULL || !cJSON_IsObject(root)) {
+        if (root) cJSON_Delete(root);
+        ESP_LOGW(TAG_SRV, "JSON inválido: %s", body);
+        return send_json_error(req, 400, "invalid json");
+    }
+
+    /* -------------------------------------------------------------------------
+     * 4) Carrega config atual (para preservar campos não fornecidos)
+     * ---------------------------------------------------------------------- */
+    app_config_t cfg;
+    esp_err_t err = app_config_load(&cfg);
+    if (err != ESP_OK) {
+        cJSON_Delete(root);
+        ESP_LOGE(TAG_SRV, "app_config_load falhou: %s", esp_err_to_name(err));
+        return send_json_error(req, 500, "load failed");
+    }
+
+    bool changed = false;
+
+    /* -------------------------------------------------------------------------
+     * 5) Aplica campos fornecidos
+     * ---------------------------------------------------------------------- */
+
+    /* Broker */
+    cJSON *broker_item = cJSON_GetObjectItem(root, "broker");
+    if (cJSON_IsString(broker_item) && broker_item->valuestring != NULL) {
+        const char *uri = broker_item->valuestring;
+
+        /* Valida formato e comprimento mínimo útil */
+        bool is_mqtt  = strncmp(uri, "mqtt://",  7) == 0 && strlen(uri) > 7;
+        bool is_mqtts = strncmp(uri, "mqtts://", 8) == 0 && strlen(uri) > 8;
+        if (!is_mqtt && !is_mqtts) {
+            cJSON_Delete(root);
+            ESP_LOGW(TAG_SRV, "URI inválida: '%s'", uri);
+            return send_json_error(req, 400, "invalid broker uri");
+        }
+        if (strlen(uri) >= sizeof(cfg.mqtt_uri)) {
+            cJSON_Delete(root);
+            return send_json_error(req, 400, "broker uri too long");
+        }
+
+        strlcpy(cfg.mqtt_uri, uri, sizeof(cfg.mqtt_uri));
+        changed = true;
+        ESP_LOGW(TAG_SRV, "  broker -> '%s'", cfg.mqtt_uri);
+    }
+
+    /* Wi-Fi SSID */
+    cJSON *ssid_item = cJSON_GetObjectItem(root, "wifi_ssid");
+    if (cJSON_IsString(ssid_item) && ssid_item->valuestring != NULL) {
+        if (strlen(ssid_item->valuestring) >= sizeof(cfg.wifi_ssid)) {
+            cJSON_Delete(root);
+            return send_json_error(req, 400, "ssid too long");
+        }
+        strlcpy(cfg.wifi_ssid, ssid_item->valuestring,
+                sizeof(cfg.wifi_ssid));
+        changed = true;
+        ESP_LOGW(TAG_SRV, "  wifi_ssid -> '%s'", cfg.wifi_ssid);
+    }
+
+    /* Wi-Fi senha */
+    cJSON *pass_item = cJSON_GetObjectItem(root, "wifi_password");
+    if (cJSON_IsString(pass_item) && pass_item->valuestring != NULL) {
+        if (strlen(pass_item->valuestring) >= sizeof(cfg.wifi_password)) {
+            cJSON_Delete(root);
+            return send_json_error(req, 400, "password too long");
+        }
+        strlcpy(cfg.wifi_password, pass_item->valuestring,
+                sizeof(cfg.wifi_password));
+        changed = true;
+        ESP_LOGW(TAG_SRV, "  wifi_password -> *** (oculto)");
+    }
+
+    cJSON_Delete(root);
+
+    if (!changed) {
+        ESP_LOGW(TAG_SRV, "Nenhum campo válido no JSON");
+        return send_json_error(req, 400, "no valid fields");
+    }
+
+    /* -------------------------------------------------------------------------
+     * 6) Salva na NVS
+     * ---------------------------------------------------------------------- */
+    err = app_config_save(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG_SRV, "app_config_save falhou: %s", esp_err_to_name(err));
+        return send_json_error(req, 500, "save failed");
+    }
+
+    /* -------------------------------------------------------------------------
+     * 7) Responde e reinicia
+     * ---------------------------------------------------------------------- */
+    ESP_LOGI(TAG_SRV, "Configuração atualizada — reboot em 1.5s");
+    send_json_ok(req, "{\"status\":\"ok\",\"action\":\"rebooting\"}");
+
+    vTaskDelay(pdMS_TO_TICKS(1500));
+    esp_restart();
+    return ESP_OK;
+}
+
+static const httpd_uri_t uri_post_admin_config = {   // ← NOVO
+    .uri      = "/admin/config",
+    .method   = HTTP_POST,
+    .handler  = admin_config_handler,
+    .user_ctx = NULL,
+};
+
 /* -----------------------------------------------------------------------------
  * Handler POST /update
  * -------------------------------------------------------------------------- */
@@ -152,6 +520,9 @@ static esp_err_t send_json_ok(httpd_req_t *req, const char *body)
 
 static esp_err_t update_post_handler(httpd_req_t *req)
 {
+    if (!rate_limit_check(req))
+        return send_rate_limited(req);    
+    
     ESP_LOGI(TAG_SRV, "POST /update de %s (content_length=%d)",
              req->uri, req->content_len);
 
@@ -602,6 +973,9 @@ static void pull_ota_result_cb(esp_err_t result, const char *msg)
 
 static esp_err_t pull_ota_post_handler(httpd_req_t *req)
 {
+    if (!rate_limit_check(req))
+        return send_rate_limited(req);    
+    
     /* Warmup */
     int64_t uptime_s = esp_timer_get_time() / 1000000;
     if (uptime_s < CONFIG_LOCKMAXXING_OTA_WARMUP_S) {
@@ -679,6 +1053,46 @@ static const httpd_uri_t uri_post_pull_ota = {
 };
 
 #endif /* CONFIG_LOCKMAXXING_OTA_PULL_ENDPOINT_ENABLE */
+
+static esp_err_t factory_reset_handler(httpd_req_t *req)
+{
+    if (!rate_limit_check(req))
+        return send_rate_limited(req);    
+    
+    ESP_LOGW(TAG_SRV, "Reset de fábrica solicitado — apagando NVS");
+
+    /* Mesma proteção do /admin/config */
+    if (CONFIG_LOCKMAXXING_ADMIN_TOKEN[0] == '\0') {
+        return send_json_error(req, 503, "endpoint disabled");
+    }
+    char token[128];
+    if (httpd_req_get_hdr_value_str(req, "X-Admin-Token", token, sizeof(token)) != ESP_OK ||
+        !token_equals_secure(token, CONFIG_LOCKMAXXING_ADMIN_TOKEN)) {
+        return send_json_error(req, 401, "unauthorized");
+    }
+    
+    esp_err_t err = app_config_erase();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG_SRV, "app_config_erase() falhou: %s",
+                 esp_err_to_name(err));
+        return send_json_error(req, 500, "erase failed");
+    }
+
+    /* Responde ANTES de reiniciar (dá tempo ao cliente receber o 200) */
+    send_json_ok(req, "{\"status\":\"ok\",\"action\":\"factory_reset\"}");
+
+    ESP_LOGI(TAG_SRV, "NVS apagada — reboot em 1s para modo provisionamento");
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart();
+    return ESP_OK;
+}
+
+static const httpd_uri_t uri_post_factory_reset = {
+    .uri      = "/factory-reset",
+    .method   = HTTP_POST,
+    .handler  = factory_reset_handler,
+    .user_ctx = NULL,
+};
 
 /* -----------------------------------------------------------------------------
  * API pública — start
@@ -758,6 +1172,12 @@ esp_err_t ota_local_server_start(uint16_t port)
         goto fail_httpd;
     }
 #endif
+
+    err = register_handler(server, &uri_post_factory_reset);
+    if (err != ESP_OK) goto fail_httpd;
+
+    err = register_handler(server, &uri_post_admin_config);
+    if (err != ESP_OK) goto fail_httpd;
 
     /* 7) Publica globais apenas após sucesso total. */
     g_httpd      = server;

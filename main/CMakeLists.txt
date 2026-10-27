@@ -31,6 +31,9 @@ idf_component_register(
         "ota_common.c"
         "ota_client.c"
         "ota_server.c"
+        "app_config.c"
+        "wifi_provisioning.c"
+        "factory_reset_button.c"
 
     # -------------------------------------------------------------------------
     # INCLUDE_DIRS — Diretórios de headers públicos

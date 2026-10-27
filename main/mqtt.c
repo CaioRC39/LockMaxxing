@@ -23,6 +23,9 @@
 #include "esp_err.h"
 #include "mqtt_client.h"
 
+#include "app_config.h"
+#include "esp_crt_bundle.h"
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 
@@ -343,11 +346,18 @@ esp_err_t mqtt_init(void)
         return ESP_ERR_NO_MEM;
     }
 
+    app_config_t cfg;
+    esp_err_t err = app_config_load(&cfg);
+    if (err != ESP_OK || cfg.mqtt_uri[0] == '\0') {
+        ESP_LOGE(TAG, "Sem URI de broker válida");
+        return ESP_ERR_INVALID_STATE;
+    }
+
     /* ------------------------------------------------------------------
      * 3) Cliente MQTT
      * ------------------------------------------------------------------ */
-    esp_mqtt_client_config_t cfg = {
-        .broker.address.uri                  = CONFIG_LOCKMAXXING_MQTT_BROKER_URI,
+    esp_mqtt_client_config_t mqtt_cfg = {
+        .broker.address.uri                  = cfg.mqtt_uri,
         .credentials.client_id               = CONFIG_LOCKMAXXING_MQTT_CLIENT_ID,
         .credentials.username                = CONFIG_LOCKMAXXING_MQTT_USERNAME,
         .credentials.authentication.password = CONFIG_LOCKMAXXING_MQTT_PASSWORD,
@@ -358,7 +368,18 @@ esp_err_t mqtt_init(void)
         .network.disable_auto_reconnect      = false,
     };
 
-    s_client = esp_mqtt_client_init(&cfg);
+    // Configuração de TLS baseada no esquema da URI
+    if (strncmp(cfg.mqtt_uri, "mqtts://", 8) == 0) {
+        ESP_LOGI(TAG, "TLS ativado para o broker");
+        mqtt_cfg.broker.verification.crt_bundle_attach = esp_crt_bundle_attach;
+        // Se o broker exigir autenticação mútua, configure também:
+        // mqtt_cfg.broker.verification.certificate = ...;
+        // mqtt_cfg.broker.verification.key = ...;
+    } else {
+        ESP_LOGW(TAG, "Conexão MQTT sem TLS (mqtt://) — não recomendado para produção");
+    }
+
+    s_client = esp_mqtt_client_init(&mqtt_cfg);
     if (s_client == NULL) {
         ESP_LOGE(TAG, "esp_mqtt_client_init() retornou NULL (URI inválida?)");
         vEventGroupDelete(s_event_group);
@@ -371,8 +392,7 @@ esp_err_t mqtt_init(void)
     /* ------------------------------------------------------------------
      * 4) Handlers e start — erros aqui caem no label 'fail'
      * ------------------------------------------------------------------ */
-    esp_err_t err = esp_mqtt_client_register_event(s_client, ESP_EVENT_ANY_ID,
-                                                    mqtt_event_handler, NULL);
+    err = esp_mqtt_client_register_event(s_client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "Falha ao registrar handler: %s", esp_err_to_name(err));
         goto fail;

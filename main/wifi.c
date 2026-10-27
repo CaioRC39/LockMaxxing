@@ -31,6 +31,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
 
+#include "app_config.h"
 #include "config.h"
 #include "wifi.h"
 
@@ -175,25 +176,37 @@ static void wifi_event_handler(void *arg,
 
             ESP_LOGW(TAG, "Desconectado (reason=%d)", evt->reason);
 
+            // 1. Limpa bits de estado
             xEventGroupClearBits(s_event_group,
-                                 WIFI_CONNECTED_BIT | WIFI_GOT_IP_BIT);
+                                WIFI_CONNECTED_BIT | WIFI_GOT_IP_BIT);
             xEventGroupSetBits(s_event_group, WIFI_DISCONNECTED_BIT);
 
+            // 2. Incrementa contador de falhas (protegido por spinlock)
             portENTER_CRITICAL(&s_lock);
             s_failure_count++;
+            uint32_t failures = s_failure_count;
             portEXIT_CRITICAL(&s_lock);
 
-            /*
-             * WIFI_REASON_ASSOC_LEAVE (8) indica que fomos NÓS que
-             * chamamos esp_wifi_disconnect(). Não devemos reconectar
-             * automaticamente nesse caso — senão wifi_disconnect()
-             * entraria em loop.
-             */
+            // 3. Se reason == ASSOC_LEAVE (desconexão intencional), não reconecta
             if (evt->reason == WIFI_REASON_ASSOC_LEAVE) {
                 ESP_LOGI(TAG, "Desconexão intencional — não reconectando");
                 break;
             }
 
+            // 4. Fallback de fábrica: se falhou N vezes, apaga NVS e reinicia
+            if (CONFIG_LOCKMAXXING_PROVISIONING_RESTART_ON_FAIL > 0 &&
+                failures >= CONFIG_LOCKMAXXING_PROVISIONING_RESTART_ON_FAIL) {
+                ESP_LOGW(TAG, "%u falhas consecutivas (limite=%d) — "
+                            "apagando config e reentrando em modo portal",
+                        (unsigned)failures,
+                        CONFIG_LOCKMAXXING_PROVISIONING_RESTART_ON_FAIL);
+                app_config_erase();
+                vTaskDelay(pdMS_TO_TICKS(500));
+                esp_restart();
+                break;
+            }
+
+            // 5. Agenda reconexão com backoff (1s, 2s, 4s... até 30s)
             schedule_reconnect();
             break;
         }
@@ -210,6 +223,7 @@ static void wifi_event_handler(void *arg,
 
         /* Reseta backoff: próxima queda recomeça em 1s. */
         portENTER_CRITICAL(&s_lock);
+        s_failure_count = 0;
         s_retry_count = 0;
         portEXIT_CRITICAL(&s_lock);
 
@@ -239,7 +253,12 @@ esp_err_t wifi_init(void)
         return ESP_OK;
     }
 
-    esp_err_t err;
+    app_config_t cfg;
+    esp_err_t err = app_config_load(&cfg);
+    if (err != ESP_OK || cfg.wifi_ssid[0] == '\0') {
+        ESP_LOGE(TAG, "Sem credenciais Wi-Fi válidas");
+        return ESP_ERR_INVALID_STATE;
+    }
 
     /* 1) Netif e event loop. Ambos podem já existir (outro componente
      *    inicializou). ESP_ERR_INVALID_STATE significa "já existe" — OK. */
@@ -311,10 +330,8 @@ esp_err_t wifi_init(void)
      * ssid e password são uint8_t[] no driver, mas strings C no config.h.
      * snprintf garante null-terminator e trunca se necessário.
      */
-    snprintf((char *)wifi_cfg.sta.ssid, sizeof(wifi_cfg.sta.ssid),
-             "%s", CONFIG_LOCKMAXXING_WIFI_SSID);
-    snprintf((char *)wifi_cfg.sta.password, sizeof(wifi_cfg.sta.password),
-             "%s", CONFIG_LOCKMAXXING_WIFI_PASSWORD);
+    strlcpy((char *)wifi_cfg.sta.ssid, cfg.wifi_ssid, sizeof(wifi_cfg.sta.ssid));
+    strlcpy((char *)wifi_cfg.sta.password, cfg.wifi_password, sizeof(wifi_cfg.sta.password));
 
     /*
      * WPA2-PSK cobre a maioria das redes domésticas. Se a sua rede for

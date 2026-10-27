@@ -63,8 +63,10 @@ CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=32768
 # -----------------------------------------------------------------------------
 # 240 MHz é a frequência máxima do ESP32-S3. Quanto maior, mais rápido
 # o processamento de JPEG e a criptografia do Wi-Fi.
-CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
-CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
+#CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+#CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=240
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_160=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ=160
 
 # Cache de dados de 64 KB (máximo). Ajuda muito com processamento de imagem.
 CONFIG_ESP32S3_DATA_CACHE_64KB=y
@@ -133,8 +135,8 @@ CONFIG_LOG_MAXIMUM_LEVEL=4
 # após reboot é instantânea.
 CONFIG_ESP_WIFI_NVS_ENABLED=y
 
-# Habilita o modo station (cliente). Não precisamos de softAP neste projeto.
-CONFIG_ESP_WIFI_SOFTAP_SUPPORT=n
+# Habilita o modo station (cliente).
+CONFIG_ESP_WIFI_SOFTAP_SUPPORT=y
 
 # Reduz o consumo de RAM do Wi-Fi (menos buffers). Bom quando temos PSRAM.
 CONFIG_ESP_WIFI_STATIC_RX_BUFFER_NUM=10

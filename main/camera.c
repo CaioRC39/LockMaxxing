@@ -101,19 +101,46 @@ static void detect_sensor(sensor_t *s)
  */
 static void apply_sensor_specific_config(sensor_t *s)
 {
-    if (g_sensor_pid == 0x5640) {
-        /* OV5640 na N16R8 — flip vertical para orientação correta. */
-        int ret_v = s->set_vflip(s, 1);
-        ESP_LOGI(TAG, "OV5640: set_vflip(1) = %d", ret_v);
+    if (s == NULL) return;
 
-        /*
-         * Neutraliza brilho/contraste/saturação. Os valores (0) são os
-         * padrões do driver. Ajustar aqui se a imagem ficar muito clara,
-         * escura ou dessaturada na sua iluminação.
-         */
-        s->set_brightness(s, 0);
-        s->set_contrast(s, 0);
-        s->set_saturation(s, 0);
+    /* ── Configuração comum a qualquer sensor ── */
+    s->set_special_effect(s, 0);   /* Efeito normal */
+    s->set_colorbar(s, 0);         /* Desliga barras de teste */
+    s->set_whitebal(s, 1);         /* AWB automático */
+    s->set_awb_gain(s, 1);
+    s->set_wb_mode(s, 0);          /* Modo automático */
+    s->set_gain_ctrl(s, 1);        /* Ganho automático */
+    s->set_exposure_ctrl(s, 1);    /* Exposição automática */
+    s->set_saturation(s, 0);       /* Neutro */
+    s->set_brightness(s, 0);
+    s->set_contrast(s, 0);
+
+    if (g_sensor_pid == 0x5640) {
+        /* ── Fix 1: Correção de shading de lente ──
+         * Sem o LENC, o OV5640 entrega o gradiente horizontal cru do
+         * sensor (lado esquerdo mais claro, direito mais escuro). A
+         * correção aplica a tabela de compensação gravada em OTP. */
+        s->set_lenc(s, 1);
+
+        /* ── Fix 2: Reduz drive dos pads DVP de 4x para 1x ──
+         * 0x302C[7:6] = pad drive. 0xC0 = 4x (default), 0x00 = 1x.
+         * Reduzir a força de saída elimina reflexos de sinal nas
+         * trilhas da placa, que sem terminação série causam bit
+         * errors acumulados por coluna (também gradiente horizontal). */
+        if (s->set_reg != NULL) {
+            int ret = s->set_reg(s, 0x302C, 0xC0, 0x00);
+            if (ret != 0) {
+                ESP_LOGW(TAG, "Ajuste de pad drive OV5640 falhou: %d", ret);
+            } else {
+                ESP_LOGI(TAG, "OV5640: pad drive reduzido (4x -> 1x)");
+            }
+        }
+
+        /* ── Flip ──
+         * Mantenha vflip(1) apenas se a imagem do self-test sair de
+         * cabeça para baixo sem ele. Alguns módulos N16R8 montam o
+         * sensor na orientação normal. */
+        s->set_vflip(s, 0);
     }
 }
 

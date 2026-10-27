@@ -37,13 +37,16 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
+#include "app_config.h"
 #include "config.h"
 #include "camera.h"
 #include "wifi.h"
+#include "wifi_provisioning.h"
 #include "mqtt.h"
 #include "actuators.h"
 #include "tasks.h"
 #include "ota.h"
+#include "factory_reset_button.h"
 
 static const char *TAG = CONFIG_LOG_TAG_MAIN;
 
@@ -149,7 +152,7 @@ void app_main(void)
     bool network_ok  = false;
 
     ESP_LOGI(TAG, "===============================================");
-    ESP_LOGI(TAG, " ESP32-CAM MQTT + OTA — boot V2");
+    ESP_LOGI(TAG, " ESP32-CAM MQTT + OTA + Seguro — boot V3");
     ESP_LOGI(TAG, "===============================================");
 
     /* -------------------------------------------------------------------------
@@ -162,6 +165,24 @@ void app_main(void)
         force_reboot("NVS init failed", 3000);
     }
     ESP_LOGI(TAG, "NVS inicializado");
+
+    /* NVS precisa ser inicializada ANTES de app_config_load() */
+    err = nvs_flash_init();
+    if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        nvs_flash_init();
+    }
+
+    app_config_t cfg;
+    app_config_load(&cfg);
+
+    if (!cfg.provisioned) {
+        /* Primeiro boot ou reset de fábrica: modo portal */
+        ESP_LOGI(TAG, "Não provisionado — iniciando portal de configuração");
+        wifi_provisioning_run();   /* não retorna */
+    }
+
+    ESP_LOGI(TAG, "Configuração encontrada: SSID='%s'", cfg.wifi_ssid);
 
     /* -------------------------------------------------------------------------
      * 2) Subsistema OTA
@@ -320,6 +341,14 @@ void app_main(void)
         force_reboot("tasks_start_all falhou", 3000);
     }
     ESP_LOGI(TAG, "Tasks iniciadas — app_main retornando");
+
+    /* Inicia o botão de reset de fábrica */
+    err = factory_reset_button_init();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Botão de reset não iniciado: %s",
+                 esp_err_to_name(err));
+    }
+    /* Não é crítico — o resto do sistema funciona sem ele */
 
     /* -------------------------------------------------------------------------
      * 10) Servidor HTTPS local de OTA (opcional, não-crítico)

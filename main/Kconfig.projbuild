@@ -12,12 +12,6 @@ menu "LockMaxxing Configuration"
         help
             Senha da rede Wi-Fi.
 
-    config LOCKMAXXING_MQTT_BROKER_URI
-        string "MQTT Broker URI"
-        default "mqtt://192.168.1.100:1883"
-        help
-            URI completa do broker MQTT (ex: mqtt://192.168.1.100:1883).
-
     config LOCKMAXXING_MQTT_USERNAME
         string "MQTT Username (opcional)"
         default ""
@@ -71,5 +65,110 @@ menu "LockMaxxing Configuration"
 
             Use em bancada. Em produção, aponte o pull para um servidor
             com cert de CA pública e desabilite esta opção.
+
+    config LOCKMAXXING_FACTORY_BROKER_URI
+        string "URI do broker MQTT de fábrica"
+        default "mqtt://192.168.1.100:1883"
+        help
+            Endereço do broker MQTT embutido no firmware de fábrica.
+
+            O usuário final NÃO configura o broker — ele é definido
+            aqui pelo fabricante e gravado na NVS no primeiro boot.
+
+            Para produção, use mqtts:// com certificado de CA válida:
+                mqtts://api.suaempresa.com:8883
+
+            Para testes locais, pode ser mqtt:// (sem TLS).
+
+    config LOCKMAXXING_PROVISIONING_TIMEOUT_S
+        int "Timeout do modo provisionamento (segundos)"
+        default 600
+        range 60 3600
+        help
+            Tempo máximo que o portal de provisionamento fica aberto
+            antes de reiniciar automaticamente (evita placa exposta
+            em SoftAP por tempo indefinido).
+
+            600 s (10 min) é o padrão. Após esse tempo sem configuração,
+            a placa reinicia e tenta novamente; se já estava configurada
+            em boot anterior, essa opção não se aplica.
+
+    config LOCKMAXXING_PROVISIONING_AP_PASSWORD
+        string "Senha do SoftAP de provisionamento (deixe vazio p/ aberto)"
+        default ""
+        help
+            Senha WPA2 do SoftAP "LockMaxxing-Setup". Se vazio, o SoftAP
+            fica aberto. Recomendado definir uma senha de 8+ caracteres
+            para evitar que vizinhos tentem reconfigurar a placa.
+
+    config LOCKMAXXING_PROVISIONING_RESTART_ON_FAIL
+        int "Reiniciar em modo portal após N falhas de Wi-Fi"
+        default 3
+        range 0 10
+        help
+            Se o Wi-Fi falhar N vezes seguidas (tentativas de conexão
+            com credenciais salvas), a placa reinicia em modo portal.
+
+            0 = nunca reinicia (placa pode ficar offline para sempre
+            se a rede sumir — só reconfigura com reset físico).
+
+            3 é um equilíbrio: 3 falhas indicam que a senha mudou ou
+            a rede sumiu, e o usuário precisa reconfigurar.
+
+    config LOCKMAXXING_FACTORY_RESET_HOLD_MS
+        int "Duração mínima do hold para reset de fábrica (ms)"
+        default 5000
+        range 1000 30000
+        help
+            Tempo que o usuário deve manter o botão BOOT pressionado
+            para acionar o reset de fábrica (apaga NVS e reinicia
+            em modo provisionamento).
+
+            5000 ms (5 s) é o padrão. Reduza para testes, aumente se
+            quiser proteção extra contra acidentes.
+
+    config LOCKMAXXING_ADMIN_TOKEN
+        string "Token do endpoint /admin/config (deixe vazio para desabilitar)"
+        default ""
+        help
+            Segredo usado pelo endpoint POST /admin/config para reconfigurar
+            o broker e/ou Wi-Fi remotamente, sem reset de fábrica.
+
+            - Se VAZIO: o endpoint fica DESABILITADO (retorna 503).
+              Esse é o padrão seguro — você precisa ativá-lo explicitamente.
+
+            - Se preenchido: o cliente deve enviar o header
+                X-Admin-Token: <valor-do-token>
+              em todo POST /admin/config.
+
+            Recomendação: use um token de 32+ caracteres aleatórios,
+            gerado com algo como "openssl rand -hex 16".
+
+    config LOCKMAXXING_RATE_LIMIT_MAX
+        int "Máximo de requisições POST por IP em uma janela"
+        default 5
+        range 1 100
+        help
+            Número máximo de requisições POST (endpoints /update,
+            /pull-ota, /admin/config, /factory-reset) que um mesmo
+            IP pode fazer na janela de tempo abaixo.
+
+            Protege contra:
+              - Força bruta em /admin/config
+              - Spam em /update que consumiria flash
+              - Ataques DoS simples
+
+            Para uso normal: 5 req/min é folgado.
+            Para testes automatizados frequentes: aumente para 20.
+
+    config LOCKMAXXING_RATE_LIMIT_WINDOW_S
+        int "Janela do rate limit (segundos)"
+        default 60
+        range 10 3600
+        help
+            Janela de tempo (em segundos) na qual o limite acima se aplica.
+
+            60 s (1 min) é o padrão. Janelas menores (10-30 s) são mais
+            agressivas; janelas maiores (300+) são mais permissivas.
 
 endmenu

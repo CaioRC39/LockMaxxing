@@ -170,10 +170,17 @@
  * ========================================================================== */
 
 #define CONFIG_CAM_XCLK_FREQ_HZ     10000000
-#define CONFIG_CAM_FRAMESIZE        FRAMESIZE_SVGA
+/* VGA (640x480) em vez de SVGA. Menos colunas = menos erro acumulado
+ * por linha. Se a qualidade melhorar drasticamente, sabemos que o
+ * problema inclui acúmulo de timing no barramento. Pode voltar a SVGA
+ * depois de validar. */
+#define CONFIG_CAM_FRAMESIZE        FRAMESIZE_VGA
 #define CONFIG_CAM_JPEG_QUALITY     12
+/* 1 framebuffer + WHEN_EMPTY: sensor só captura quando pedimos.
+ * Reduz aquecimento significativamente. Latência de captura sobe
+ * de ~0ms para ~200ms — irrelevante com ciclos de 30s. */
 #define CONFIG_CAM_FB_COUNT         1
-#define CONFIG_CAM_GRAB_MODE        CAMERA_GRAB_LATEST
+#define CONFIG_CAM_GRAB_MODE        CAMERA_GRAB_WHEN_EMPTY
 #define CONFIG_CAM_PIXEL_FORMAT     PIXFORMAT_JPEG
 
 /* =============================================================================

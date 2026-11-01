@@ -170,7 +170,10 @@ CONFIG_LWIP_TCP_WND_DEFAULT=5744
 CONFIG_MQTT_BUFFER_SIZE=4096
 
 # Habilita suporte a transporte sobre TCP (o padrão).
-CONFIG_MQTT_TRANSPORT_SSL=n
+CONFIG_MQTT_TRANSPORT_SSL=y
+# TLS do MQTT: verifica certificado do broker e apresenta certificado de cliente (mTLS)
+CONFIG_ESP_TLS_INSECURE=n
+CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=n
 CONFIG_MQTT_TRANSPORT_WEBSOCKET=n
 
 # -----------------------------------------------------------------------------

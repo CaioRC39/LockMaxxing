@@ -77,6 +77,7 @@ idf_component_register(
         espressif__esp_jpeg
 )
 
+
 # =============================================================================
 # Geração de main/certs.h
 # =============================================================================
@@ -116,3 +117,43 @@ add_custom_target(gen_certs
 # falhar com "fatal error: certs.h: No such file or directory" no
 # primeiro build, mesmo com o add_custom_command correto.
 add_dependencies(${COMPONENT_LIB} gen_certs)
+
+
+# =============================================================================
+# Geração de main/mqtt_certs.h (certificados mTLS do MQTT)
+# =============================================================================
+#
+# Mesmo padrão do certs.h acima: usa o caminho absoluto do Git Bash
+# (evita o bash.exe do WSL), e add_custom_target com ALL para garantir
+# execução independentemente do estado do COMPONENT_LIB.
+#
+# Regenera apenas se:
+#   - mqtt_certs.h não existe
+#   - algum dos DEPENDS (certificados ou o próprio script) é mais novo
+#     que mqtt_certs.h
+#
+# Para forçar: rm main/mqtt_certs.h && idf.py build
+
+set(MQTT_CERTS_FILES
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools/certs/ca.crt"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools/certs/client.crt"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../tools/certs/client.key"
+)
+
+add_custom_command(
+    OUTPUT "${CMAKE_CURRENT_SOURCE_DIR}/mqtt_certs.h"
+    COMMAND "C:/Program Files/Git/bin/bash.exe"
+            "${CMAKE_CURRENT_SOURCE_DIR}/../tools/gen_mqtt_certs.sh"
+    DEPENDS ${MQTT_CERTS_FILES}
+            "${CMAKE_CURRENT_SOURCE_DIR}/../tools/gen_mqtt_certs.sh"
+            "${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt"
+    WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+    COMMENT "Gerando main/mqtt_certs.h (certificados mTLS do MQTT)"
+    VERBATIM
+)
+
+add_custom_target(gen_mqtt_certs ALL
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/mqtt_certs.h"
+)
+
+add_dependencies(${COMPONENT_LIB} gen_mqtt_certs)

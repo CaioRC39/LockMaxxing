@@ -33,6 +33,7 @@
 
 #include "config.h"
 #include "mqtt.h"
+#include "mqtt_certs.h"
 
 static const char *TAG = CONFIG_LOG_TAG_MQTT;
 
@@ -313,48 +314,34 @@ esp_err_t mqtt_init(void)
         return ESP_OK;
     }
 
-    /* Validação mínima da URI: esquema + host */
-    if (CONFIG_LOCKMAXXING_MQTT_BROKER_URI[0] == '\0') {
-        ESP_LOGE(TAG, "CONFIG_LOCKMAXXING_MQTT_BROKER_URI vazia em config.h");
-        return ESP_ERR_INVALID_ARG;
-    }
-
-    /* ------------------------------------------------------------------
-     * 1) Mutex do buffer de chunks — criado PRIMEIRO, antes de qualquer
-     *    outro recurso. Se falhar aqui, não há nada para limpar: só
-     *    retornar erro.
-     *
-     *    Por que primeiro: evita que tenhamos que desfazer event_group
-     *    e client em caso de falha do mutex. Quanto mais cedo criamos
-     *    recursos, mais cedo podemos falhar sem custo.
-     * ------------------------------------------------------------------ */
-    s_chunk_mutex = xSemaphoreCreateMutexStatic(&s_chunk_mutex_buf);
-    if (s_chunk_mutex == NULL) {
-        ESP_LOGE(TAG, "Falha ao criar mutex do buffer de chunk");
-        return ESP_ERR_NO_MEM;
-    }
-
-    /* ------------------------------------------------------------------
-     * 2) Event group
-     * ------------------------------------------------------------------ */
-    s_event_group = xEventGroupCreate();
-    if (s_event_group == NULL) {
-        ESP_LOGE(TAG, "Falha ao criar event group");
-        /* Mutex já foi criado — precisa ser limpo antes de retornar. */
-        vSemaphoreDelete(s_chunk_mutex);
-        s_chunk_mutex = NULL;
-        return ESP_ERR_NO_MEM;
-    }
-
+    /* Carrega a configuração da NVS */
     app_config_t cfg;
     esp_err_t err = app_config_load(&cfg);
     if (err != ESP_OK || cfg.mqtt_uri[0] == '\0') {
-        ESP_LOGE(TAG, "Sem URI de broker válida");
+        ESP_LOGE(TAG, "Sem URI de broker válida na NVS");
         return ESP_ERR_INVALID_STATE;
     }
 
+    ESP_LOGI(TAG, "URI do broker: %s", cfg.mqtt_uri);
+
+    /* Cria o event group */
+    s_event_group = xEventGroupCreate();
+    if (s_event_group == NULL) {
+        ESP_LOGE(TAG, "Falha ao criar event group");
+        return ESP_ERR_NO_MEM;
+    }
+
+    /* Cria o mutex do buffer de chunk */
+    s_chunk_mutex = xSemaphoreCreateMutexStatic(&s_chunk_mutex_buf);
+    if (s_chunk_mutex == NULL) {
+        ESP_LOGE(TAG, "Falha ao criar mutex do chunk");
+        vEventGroupDelete(s_event_group);
+        s_event_group = NULL;
+        return ESP_ERR_NO_MEM;
+    }
+
     /* ------------------------------------------------------------------
-     * 3) Cliente MQTT
+     * Configuração do cliente MQTT
      * ------------------------------------------------------------------ */
     esp_mqtt_client_config_t mqtt_cfg = {
         .broker.address.uri                  = cfg.mqtt_uri,
@@ -368,17 +355,47 @@ esp_err_t mqtt_init(void)
         .network.disable_auto_reconnect      = false,
     };
 
-    // Configuração de TLS baseada no esquema da URI
-    if (strncmp(cfg.mqtt_uri, "mqtts://", 8) == 0) {
-        ESP_LOGI(TAG, "TLS ativado para o broker");
-        mqtt_cfg.broker.verification.crt_bundle_attach = esp_crt_bundle_attach;
-        // Se o broker exigir autenticação mútua, configure também:
-        // mqtt_cfg.broker.verification.certificate = ...;
-        // mqtt_cfg.broker.verification.key = ...;
-    } else {
-        ESP_LOGW(TAG, "Conexão MQTT sem TLS (mqtt://) — não recomendado para produção");
-    }
+    /* ------------------------------------------------------------------
+     * TLS — configurado com certificados embutidos (mqtt_certs.h)
+     * ------------------------------------------------------------------
+     *
+     * CONFIG_LOCKMAXXING_MQTT_TLS_MODE:
+     *   0 = sem TLS (mqtt://) — apenas para desenvolvimento
+     *   1 = TLS simples (mqtts://) — ESP32 verifica o broker
+     *   2 = mTLS (mqtts://) — ESP32 verifica o broker e se identifica
+     *
+     * Os certificados vêm de main/mqtt_certs.h, gerado em build por
+     * tools/gen_mqtt_certs.sh a partir de tools/certs/.
+     * ------------------------------------------------------------------ */
+#if CONFIG_LOCKMAXXING_MQTT_TLS_MODE == 1 || CONFIG_LOCKMAXXING_MQTT_TLS_MODE == 2
+    /* Verifica o broker contra o CA embutido */
+    mqtt_cfg.broker.verification.certificate     = MQTT_CA_PEM;
 
+    ESP_LOGI(TAG, "TLS ativo: broker verificado contra CA embutido (%u bytes)",
+             (unsigned)MQTT_CA_PEM_LEN);
+#elif CONFIG_LOCKMAXXING_MQTT_TLS_MODE == 2
+    /* mTLS — configurado abaixo; o bloco acima já incluiu a verificação
+     * do servidor, este bloco adiciona o certificado do cliente. */
+#endif
+
+#if CONFIG_LOCKMAXXING_MQTT_TLS_MODE == 2
+    /* Apresenta o certificado de cliente ao broker (mTLS) */
+    mqtt_cfg.credentials.authentication.certificate     = MQTT_CLIENT_PEM;
+    mqtt_cfg.credentials.authentication.key             = MQTT_CLIENT_KEY_PEM;
+
+    ESP_LOGI(TAG, "mTLS ativo: client cert (%u bytes), key (%u bytes)",
+             (unsigned)MQTT_CLIENT_PEM_LEN,
+             (unsigned)MQTT_CLIENT_KEY_PEM_LEN);
+#endif
+
+#if CONFIG_LOCKMAXXING_MQTT_TLS_MODE == 0
+    ESP_LOGW(TAG, "TLS DESABILITADO (TLS_MODE=0) — conexão não cifrada. "
+                  "Habilite em menuconfig para produção.");
+#endif
+
+    /* ------------------------------------------------------------------
+     * Cria o cliente
+     * ------------------------------------------------------------------ */
     s_client = esp_mqtt_client_init(&mqtt_cfg);
     if (s_client == NULL) {
         ESP_LOGE(TAG, "esp_mqtt_client_init() retornou NULL (URI inválida?)");
@@ -389,42 +406,39 @@ esp_err_t mqtt_init(void)
         return ESP_FAIL;
     }
 
-    /* ------------------------------------------------------------------
-     * 4) Handlers e start — erros aqui caem no label 'fail'
-     * ------------------------------------------------------------------ */
-    err = esp_mqtt_client_register_event(s_client, ESP_EVENT_ANY_ID, mqtt_event_handler, NULL);
+    /* Registra handler de eventos */
+    err = esp_mqtt_client_register_event(s_client, ESP_EVENT_ANY_ID,
+                                          mqtt_event_handler, NULL);
     if (err != ESP_OK) {
-        ESP_LOGE(TAG, "Falha ao registrar handler: %s", esp_err_to_name(err));
-        goto fail;
+        ESP_LOGE(TAG, "esp_mqtt_client_register_event() falhou: %s",
+                 esp_err_to_name(err));
+        esp_mqtt_client_destroy(s_client);
+        s_client = NULL;
+        vEventGroupDelete(s_event_group);
+        s_event_group = NULL;
+        vSemaphoreDelete(s_chunk_mutex);
+        s_chunk_mutex = NULL;
+        return err;
     }
 
+    /* Inicia o cliente */
     err = esp_mqtt_client_start(s_client);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "esp_mqtt_client_start() falhou: %s",
                  esp_err_to_name(err));
-        goto fail;
+        esp_mqtt_client_destroy(s_client);
+        s_client = NULL;
+        vEventGroupDelete(s_event_group);
+        s_event_group = NULL;
+        vSemaphoreDelete(s_chunk_mutex);
+        s_chunk_mutex = NULL;
+        return err;
     }
 
     s_initialized = true;
     ESP_LOGI(TAG, "Cliente MQTT iniciado: broker='%s', client_id='%s'",
-             CONFIG_LOCKMAXXING_MQTT_BROKER_URI, CONFIG_LOCKMAXXING_MQTT_CLIENT_ID);
+             cfg.mqtt_uri, CONFIG_LOCKMAXXING_MQTT_CLIENT_ID);
     return ESP_OK;
-
-fail:
-    /* Libera tudo que foi criado até este ponto, na ordem inversa. */
-    if (s_client != NULL) {
-        esp_mqtt_client_destroy(s_client);
-        s_client = NULL;
-    }
-    if (s_event_group != NULL) {
-        vEventGroupDelete(s_event_group);
-        s_event_group = NULL;
-    }
-    if (s_chunk_mutex != NULL) {
-        vSemaphoreDelete(s_chunk_mutex);
-        s_chunk_mutex = NULL;
-    }
-    return err;
 }
 
 esp_err_t mqtt_deinit(void)

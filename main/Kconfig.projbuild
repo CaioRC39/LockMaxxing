@@ -68,17 +68,14 @@ menu "LockMaxxing Configuration"
 
     config LOCKMAXXING_FACTORY_BROKER_URI
         string "URI do broker MQTT de fábrica"
-        default "mqtt://192.168.1.100:1883"
+        default "mqtts://192.168.1.100:8883"
         help
             Endereço do broker MQTT embutido no firmware de fábrica.
 
-            O usuário final NÃO configura o broker — ele é definido
-            aqui pelo fabricante e gravado na NVS no primeiro boot.
+            Com TLS_MODE >= 1: mqtts://IP_OU_HOST:8883
+            Com TLS_MODE == 0: mqtt://IP:1883
 
-            Para produção, use mqtts:// com certificado de CA válida:
-                mqtts://api.suaempresa.com:8883
-
-            Para testes locais, pode ser mqtt:// (sem TLS).
+            O CN/SAN do server.crt deve bater com o host/IP desta URI.
 
     config LOCKMAXXING_PROVISIONING_TIMEOUT_S
         int "Timeout do modo provisionamento (segundos)"
@@ -269,5 +266,17 @@ menu "LockMaxxing Configuration"
             ATENÇÃO: preencha via menuconfig antes do flash. O segredo
             vai para o binário (extraível com esptool). Para produção
             real, provisione via /admin/config após o flash.
+
+    config LOCKMAXXING_MQTT_TLS_MODE
+        int "Modo TLS do MQTT (0=off, 1=server, 2=mTLS)"
+        default 2
+        range 0 2
+        help
+            0 = mqtt:// sem TLS — APENAS para desenvolvimento em rede isolada.
+            1 = mqtts:// com verificação do certificado do broker (TLS simples).
+            2 = mqtts:// com verificação do broker + certificado de cliente (mTLS).
+
+            Os certificados vêm de tools/certs/, convertidos em arrays C
+            por tools/gen_mqtt_certs.sh durante o build. NÃO cole PEM aqui.
 
 endmenu

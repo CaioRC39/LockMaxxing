@@ -41,6 +41,7 @@
 #include "led_status.h"
 #include "quality_filter.h"
 #include "hmac_auth.h"
+#include "stats.h"
 
 /* Timeouts específicos deste módulo (não em config.h para não poluir) */
 #define TASKS_APPLY_TIMEOUT_MS      8000    /* actuator_task: 3s típ. + margem */
@@ -317,6 +318,7 @@ static void camera_task(void *arg)
 
         if (err != ESP_OK || frame == NULL) {
             ESP_LOGE(TAG, "Captura falhou: %s", esp_err_to_name(err));
+            stats_set_last_error("CAPTURE_FAILED");
             comm_msg_t msg = { .type = COMM_MSG_CAMERA_FAILED };
             if (xQueueSend(s_comm_msg_queue, &msg, pdMS_TO_TICKS(100)) != pdTRUE) {
                 ESP_LOGW(TAG, "Fila cheia — falha perdida");
@@ -330,7 +332,12 @@ static void camera_task(void *arg)
         quality_result_t result = quality_analyze_jpeg(frame->buf, frame->len,
                                                        &metrics);
 
+        stats_inc_captured();
+        
         if (result != QUALITY_OK) {
+            stats_inc_rejected_quality();
+            stats_set_last_error(quality_result_name(result));
+
             ESP_LOGW(TAG, "Frame rejeitado: %s", quality_result_name(result));
             camera_release(frame);
 
@@ -347,6 +354,8 @@ static void camera_task(void *arg)
             continue;
         }
 
+        /* Se passou no filtro, registra métricas */
+        stats_record_quality(metrics.brightness, metrics.sharpness);
         ESP_LOGI(TAG, "Frame aprovado: %u bytes (brilho=%.1f, nitidez=%.1f)",
                  (unsigned)frame->len,
                  metrics.brightness, metrics.sharpness);
@@ -354,6 +363,8 @@ static void camera_task(void *arg)
         ESP_LOGI(TAG, "Frame capturado: %u×%u, %u bytes",
                  (unsigned)frame->width, (unsigned)frame->height,
                  (unsigned)frame->len);
+
+        stats_inc_captured();
 #endif
 
         comm_msg_t msg = {
@@ -506,12 +517,15 @@ static void do_send_chunked(comm_task_ctx_t *ctx)
     }
 
     ESP_LOGI(TAG, "Imagem id=%u enviada com sucesso", (unsigned)image_id);
+    stats_inc_sent();
     camera_release(frame);
     ctx->pending_frame = NULL;
     sm_process_event(SM_EVENT_SEND_OK);
     return;
 
 fail:
+    stats_inc_rejected_network();
+    stats_set_last_error("SEND_FAILED");
     camera_release(frame);
     ctx->pending_frame = NULL;
     sm_process_event(SM_EVENT_SEND_FAILED);
@@ -659,12 +673,14 @@ static void process_comm_msg(comm_task_ctx_t *ctx, const comm_msg_t *msg)
             ESP_LOGW(TAG, "Resultado para id=%u, esperando id=%u — inválido",
                      (unsigned)msg->data.result.image_id,
                      (unsigned)ctx->pending_image_id);
+            stats_set_last_error("RESULT_INVALID");
             sm_process_event(SM_EVENT_RESULT_INVALID);
             break;
         }
 
         /* Guarda decisão antes de emitir o evento (on_enter_state(APPLYING)
          * precisa saber se é approved ou rejected). */
+        stats_set_last_result(msg->data.result.approved);
         ctx->pending_apply_approved = msg->data.result.approved;
         sm_process_event(msg->data.result.approved
                          ? SM_EVENT_RESULT_APPROVED
@@ -775,6 +791,7 @@ static void check_state_timeouts(comm_task_ctx_t *ctx)
         case SM_STATE_CAPTURING:
             if (elapsed >= pdMS_TO_TICKS(CONFIG_CAMERA_CAPTURE_TIMEOUT_MS)) {
                 ESP_LOGW(TAG, "Timeout aguardando frame da câmera");
+                stats_set_last_error("CAPTURE_TIMEOUT"); 
                 sm_process_event(SM_EVENT_CAPTURE_TIMEOUT);
             }
             break;
@@ -782,6 +799,7 @@ static void check_state_timeouts(comm_task_ctx_t *ctx)
         case SM_STATE_WAITING:
             if (elapsed >= pdMS_TO_TICKS(CONFIG_MQTT_RESULT_TIMEOUT_MS)) {
                 ESP_LOGW(TAG, "Timeout aguardando resultado do servidor");
+                stats_set_last_error("RESULT_TIMEOUT");
                 sm_process_event(SM_EVENT_RESULT_TIMEOUT);
             }
             break;
@@ -789,6 +807,7 @@ static void check_state_timeouts(comm_task_ctx_t *ctx)
         case SM_STATE_APPLYING:
             if (elapsed >= pdMS_TO_TICKS(TASKS_APPLY_TIMEOUT_MS)) {
                 ESP_LOGW(TAG, "Timeout aguardando actuator_task");
+                stats_set_last_error("APPLY_TIMEOUT");
                 sm_process_event(SM_EVENT_ABORT);
             }
             break;

@@ -195,6 +195,16 @@ void wifi_get_stats(uint32_t *attempts_out, uint32_t *failures_out);
  */
 esp_err_t wifi_disconnect(void);
 
+/**
+ * @brief Retorna o RSSI do AP associado (dBm, tipicamente -30 a -90).
+ *
+ * Se não estiver conectado, retorna ESP_ERR_INVALID_STATE e não
+ * escreve em out_rssi.
+ *
+ * @param out_rssi  Ponteiro para receber o valor (pode ser NULL).
+ */
+esp_err_t wifi_get_rssi(int8_t *out_rssi);
+
 #ifdef __cplusplus
 }
 #endif

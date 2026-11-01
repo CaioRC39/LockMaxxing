@@ -48,6 +48,11 @@
 
 #include "esp_https_server.h"
 #include "app_config.h" 
+#include "stats.h"
+#include "hmac_auth.h"
+#include "tasks.h"
+#include "mqtt.h"
+#include "wifi.h"
 
 /* Certificado gerado pelo build (ver tools/gen_cert.sh + main/CMakeLists.txt). */
 #include "certs.h"
@@ -810,38 +815,101 @@ static const httpd_uri_t uri_get_status = {
 
 static esp_err_t status_get_handler(httpd_req_t *req)
 {
-    const esp_partition_t *running = NULL;
-    const esp_partition_t *next    = NULL;
-
-    /*
-     * Consulta via esp_ota_get_*_partition (não as funções de ota_common,
-     * para manter esta peça autocontida e independente do estado global
-     * de OTA — /status deve funcionar mesmo se ninguém chamou ota_init
-     * além do start do servidor).
-     */
-    running = esp_ota_get_running_partition();
-    next    = esp_ota_get_next_update_partition(NULL);
+    const esp_partition_t *running = esp_ota_get_running_partition();
+    const esp_partition_t *next    = esp_ota_get_next_update_partition(NULL);
 
     int64_t uptime_ms = esp_timer_get_time() / 1000;
 
-    /* 384 bytes é folgado para 3 labels + state + uint64 em decimal. */
-    char body[384];
+    /* ── Métricas dos módulos ── */
+    stats_snapshot_t st;
+    stats_snapshot(&st);
+
+    uint32_t mqtt_pub = 0, mqtt_recv = 0, mqtt_drop = 0;
+    mqtt_get_stats(&mqtt_pub, &mqtt_recv, &mqtt_drop);
+
+    tasks_queue_stats_t qs;
+    tasks_get_queue_stats(&qs);
+
+    int8_t rssi = -127;
+    wifi_get_rssi(&rssi);   /* se falhar, mantém -127 (desconhecido) */
+
+    const char *last_result_str;
+    switch (st.last_result) {
+    case STATS_LAST_RESULT_APPROVED: last_result_str = "APPROVED"; break;
+    case STATS_LAST_RESULT_REJECTED: last_result_str = "REJECTED"; break;
+    default:                         last_result_str = "none";     break;
+    }
+
+    /* Prepara o campo last_error: string JSON-safe ou null */
+    char last_error_field[96] = "null";
+    if (st.last_error[0] != '\0') {
+        snprintf(last_error_field, sizeof(last_error_field),
+                 "\"%s\"", st.last_error);
+    }
+
+    /* Buffer generoso: o JSON completo ocupa ~700 bytes no pior caso */
+    char body[1024];
     int n = snprintf(body, sizeof(body),
-        "{\"state\":%d,"
+        "{"
+        "\"state\":\"%s\","
+        "\"uptime_ms\":%lld,"
         "\"running\":\"%s\","
         "\"next\":\"%s\","
         "\"pending_verify\":%s,"
         "\"port\":%u,"
-        "\"uptime_ms\":%lld}",
-        (int)ota_get_state(),
-        running != NULL ? running->label : "unknown",
-        next    != NULL ? next->label    : "none",
+        "\"wifi_connected\":%s,"
+        "\"wifi_rssi\":%d,"
+        "\"mqtt_connected\":%s,"
+        "\"mqtt_published\":%u,"
+        "\"mqtt_received\":%u,"
+        "\"mqtt_dropped\":%u,"
+        "\"queue_comm_msg\":%u,"
+        "\"queue_camera_cmd\":%u,"
+        "\"queue_actuator_cmd\":%u,"
+        "\"images_captured\":%u,"
+        "\"images_sent\":%u,"
+        "\"images_rejected_quality\":%u,"
+        "\"images_rejected_network\":%u,"
+        "\"avg_brightness\":%d,"
+        "\"avg_sharpness\":%d,"
+        "\"last_result\":\"%s\","
+        "\"hmac_enabled\":%s,"
+        "\"quality_filter_enabled\":%s,"
+        "\"last_error\":%s"
+        "}",
+        sm_get_state_name(sm_get_state()),
+        (long long)uptime_ms,
+        running ? running->label : "unknown",
+        next    ? next->label    : "none",
         ota_is_pending_verify() ? "true" : "false",
         (unsigned)g_server_port,
-        (long long)uptime_ms);
+        wifi_is_connected() ? "true" : "false",
+        (int)rssi,
+        mqtt_is_connected() ? "true" : "false",
+        (unsigned)mqtt_pub,
+        (unsigned)mqtt_recv,
+        (unsigned)mqtt_drop,
+        (unsigned)qs.comm_msg_depth,
+        (unsigned)qs.camera_cmd_depth,
+        (unsigned)qs.actuator_cmd_depth,
+        (unsigned)st.images_captured,
+        (unsigned)st.images_sent,
+        (unsigned)st.images_rejected_quality,
+        (unsigned)st.images_rejected_network,
+        (int)st.avg_brightness,
+        (int)st.avg_sharpness,
+        last_result_str,
+        hmac_auth_is_enabled() ? "true" : "false",
+#if CONFIG_LOCKMAXXING_QUALITY_FILTER_ENABLED
+        "true",
+#else
+        "false",
+#endif
+        last_error_field);
 
     if (n < 0 || (size_t)n >= sizeof(body)) {
-        /* snprintf truncou — improvável, mas devolve erro explícito. */
+        ESP_LOGE(TAG_SRV, "status: snprintf truncou (%d bytes, buffer %zu)",
+                 n, sizeof(body));
         return send_json_error(req, 500, "status serialization overflow");
     }
 

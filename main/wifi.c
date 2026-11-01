@@ -548,3 +548,21 @@ esp_err_t wifi_disconnect(void)
      */
     return esp_wifi_disconnect();
 }
+
+esp_err_t wifi_get_rssi(int8_t *out_rssi)
+{
+    if (!wifi_is_connected()) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    wifi_ap_record_t ap;
+    esp_err_t err = esp_wifi_sta_get_ap_info(&ap);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    if (out_rssi != NULL) {
+        *out_rssi = ap.rssi;
+    }
+    return ESP_OK;
+}

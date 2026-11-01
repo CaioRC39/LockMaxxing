@@ -37,6 +37,7 @@ idf_component_register(
         "led_status.c"
         "quality_filter.c"
         "hmac_auth.c"
+        "stats.c"
 
     # -------------------------------------------------------------------------
     # INCLUDE_DIRS — Diretórios de headers públicos

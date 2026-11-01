@@ -49,6 +49,7 @@
 #include "factory_reset_button.h"
 #include "led_status.h"
 #include "hmac_auth.h"
+#include "stats.h"
 
 static const char *TAG = CONFIG_LOG_TAG_MAIN;
 
@@ -174,6 +175,8 @@ void app_main(void)
         nvs_flash_erase();
         nvs_flash_init();
     }
+
+    app_stats_init();
 
     app_config_t cfg;
     app_config_load(&cfg);

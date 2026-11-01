@@ -508,18 +508,29 @@ esp_err_t mqtt_set_result_callback(mqtt_result_cb_t cb)
 
 esp_err_t mqtt_publish_request(uint32_t image_id,
                                uint32_t total_size,
-                               uint16_t total_chunks)
+                               uint16_t total_chunks,
+                               const char *hmac_hex)
 {
     if (!s_initialized || !mqtt_is_connected()) {
         return ESP_ERR_INVALID_STATE;
     }
 
-    char payload[128];
-    int n = snprintf(payload, sizeof(payload),
+    char payload[256];
+    int n;
+    if (hmac_hex != NULL && hmac_hex[0] != '\0') {
+        n = snprintf(payload, sizeof(payload),
+                     "{\"id\":%u,\"size\":%u,\"chunks\":%u,\"hmac\":\"%s\"}",
+                     (unsigned)image_id,
+                     (unsigned)total_size,
+                     (unsigned)total_chunks,
+                     hmac_hex);
+    } else {
+        n = snprintf(payload, sizeof(payload),
                      "{\"id\":%u,\"size\":%u,\"chunks\":%u}",
                      (unsigned)image_id,
                      (unsigned)total_size,
                      (unsigned)total_chunks);
+    }
     if (n < 0 || (size_t)n >= sizeof(payload)) {
         ESP_LOGE(TAG, "snprintf truncou payload de request");
         return ESP_FAIL;
@@ -529,15 +540,17 @@ esp_err_t mqtt_publish_request(uint32_t image_id,
                                          CONFIG_MQTT_TOPIC_REQUEST,
                                          payload, n,
                                          CONFIG_MQTT_QOS,
-                                         0 /* retain=false */);
+                                         0);
     if (msg_id < 0) {
         ESP_LOGE(TAG, "Falha ao publicar request (id=%u)", (unsigned)image_id);
         return ESP_FAIL;
     }
 
-    ESP_LOGI(TAG, "Request publicado: id=%u, size=%u, chunks=%u (msg_id=%d)",
+    ESP_LOGI(TAG, "Request publicado: id=%u, size=%u, chunks=%u%s (msg_id=%d)",
              (unsigned)image_id, (unsigned)total_size,
-             (unsigned)total_chunks, msg_id);
+             (unsigned)total_chunks,
+             (hmac_hex && hmac_hex[0]) ? ", assinado" : "",
+             msg_id);
     return ESP_OK;
 }
 

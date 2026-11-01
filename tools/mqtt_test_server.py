@@ -14,7 +14,7 @@
 #   Broker MQTT local (Mosquitto): veja README para instalação
 #
 # Uso básico:
-#   python3 tools/mqtt_test_server.py --broker localhost
+#   python tools/mqtt_t1est_server.py --broker localhost
 #
 # Modos de decisão (--mode):
 #   always-approve  (default) Sempre aprova
@@ -40,6 +40,8 @@ import struct
 import sys
 import threading
 import time
+import hmac as hmac_lib
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -123,6 +125,7 @@ class ImageAnalyzer:
             "bytes_received":  0,
             "approved":        0,
             "rejected":        0,
+            "hmac_rejected":   0,
         }
 
         self.client = _make_mqtt_client(client_id="mqtt-test-server")
@@ -131,6 +134,13 @@ class ImageAnalyzer:
         self.client.on_connect    = self.on_connect
         self.client.on_disconnect = self.on_disconnect
         self.client.on_message    = self.on_message
+        self.hmac_secret = (bytes.fromhex(args.hmac_secret)
+                            if args.hmac_secret else None)
+        if self.hmac_secret:
+            print(f"[INIT] HMAC ativo (chave de {len(self.hmac_secret)} bytes)")
+
+        # Guarda o HMAC esperado por image_id (chega no /request)
+        self.expected_hmac: "dict[int, str]" = {}
 
         os.makedirs(args.output_dir, exist_ok=True)
 
@@ -175,6 +185,7 @@ class ImageAnalyzer:
         image_id     = data.get("id")
         total_size   = data.get("size", 0)
         total_chunks = data.get("chunks", 0)
+        hmac_hex     = data.get("hmac", None)
 
         if not isinstance(image_id, int) or image_id <= 0:
             print(f"[REQUEST] id inválido: {image_id!r}")
@@ -187,6 +198,17 @@ class ImageAnalyzer:
            or total_chunks > MAX_CHUNKS:
             print(f"[REQUEST] chunks inválido: {total_chunks!r}")
             return
+        # ── Validação HMAC ──
+        if self.hmac_secret is not None:
+            if not isinstance(hmac_hex, str) or len(hmac_hex) != 64:
+                print(f"[REQUEST] id={image_id}: HMAC ausente ou malformado "
+                      f"(servidor exige assinatura) — rejeitando")
+                return
+            self.expected_hmac[image_id] = hmac_hex.lower()
+            print(f"[REQUEST] id={image_id}: HMAC recebido (será validado na finalização)")
+        else:
+            if hmac_hex:
+                print(f"[REQUEST] id={image_id}: HMAC presente mas servidor sem segredo — ignorando")
 
         with self.lock:
             if image_id in self.pending_images:
@@ -252,6 +274,30 @@ class ImageAnalyzer:
         except (KeyError, ValueError) as exc:
             print(f"[FINALIZE] id={img.image_id}: erro na reconstrução: {exc}")
             return
+
+        # ── Verificação HMAC ──
+        if self.hmac_secret is not None:
+            expected = self.expected_hmac.pop(img.image_id, None)
+            if expected is None:
+                print(f"[FINALIZE] id={img.image_id}: sem HMAC esperado — rejeitando")
+                self.stats["hmac_rejected"] = self.stats.get("hmac_rejected", 0) + 1
+                return
+
+            # Reconstrói o que o ESP32 assinou: metadata + imagem
+            metadata = struct.pack(">IIH", img.image_id,
+                                   img.total_size, img.total_chunks)
+            computed = hmac_lib.new(self.hmac_secret,
+                                    metadata + data,
+                                    hashlib.sha256).hexdigest()
+
+            if not hmac_lib.compare_digest(computed, expected):
+                print(f"[FINALIZE] id={img.image_id}: HMAC INVÁLIDO — rejeitando")
+                print(f"  esperado: {expected}")
+                print(f"  calculado: {computed}")
+                self.stats["hmac_rejected"] = self.stats.get("hmac_rejected", 0) + 1
+                return
+
+            print(f"[FINALIZE] id={img.image_id}: HMAC válido")
 
         self.stats["images_complete"] += 1
 
@@ -436,6 +482,9 @@ def build_argparser() -> argparse.ArgumentParser:
                    help="Modo de decisão de resultado")
     p.add_argument("--analysis-delay", type=float, default=0.0,
                    help="Delay (s) antes de publicar o resultado")
+    p.add_argument("--hmac-secret", default=None, metavar="HEX",
+                   help="Segredo HMAC-SHA256 hex (64 chars). "
+                        "Se fornecido, imagens sem assinatura válida são rejeitadas.")
 
     # Output
     p.add_argument("--output-dir", default="received_images",

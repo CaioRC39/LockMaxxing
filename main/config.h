@@ -104,6 +104,31 @@
 #define CONFIG_MQTT_RESULT_TIMEOUT_MS  30000
 
 /* =============================================================================
+ * LED de status — WS2812 onboard (GPIO 48)
+ * =============================================================================
+ *
+ * Um único LED RGB endereçável na GPIO 48, controlado por RMT.
+ * Ordem de cor do WS2812: GRB (não RGB).
+ *
+ * O brilho máximo é limitado por CONFIG_LOCKMAXXING_LED_BRIGHTNESS
+ * (Kconfig) porque o LED onboard em brilho total é ofuscante e
+ * desnecessário para status.
+ * ========================================================================== */
+
+#define CONFIG_LED_WS2812_GPIO      48
+#define CONFIG_LED_WS2812_COUNT     1
+
+/* Cores base (brilho 0-255, será multiplicado pelo fator global) */
+#define CONFIG_LED_COLOR_OFF        {0,   0,   0}
+#define CONFIG_LED_COLOR_GREEN      {0,   180, 0}    /* IDLE / APPLYING aprovado */
+#define CONFIG_LED_COLOR_BLUE       {0,   0,   180}  /* INIT / CAPTURING */
+#define CONFIG_LED_COLOR_YELLOW     {180, 180, 0}    /* SENDING */
+#define CONFIG_LED_COLOR_CYAN       {0,   180, 180}  /* WAITING */
+#define CONFIG_LED_COLOR_RED        {180, 0,   0}    /* ERROR / APPLYING reprovado */
+#define CONFIG_LED_COLOR_PURPLE     {120, 0,   180}  /* OTA ativo */
+#define CONFIG_LED_COLOR_WHITE      {180, 180, 180}  /* diagnóstico */
+
+/* =============================================================================
  * 3. PINAGEM DOS ATUADORES
  * =============================================================================
  *
@@ -116,10 +141,6 @@
  * Pinos escolhidos: 1, 2, 3, 21 — todos livres na N16R8.
  * ========================================================================== */
 
-/* LEDs */
-#define CONFIG_GPIO_LED_GREEN       1
-#define CONFIG_GPIO_LED_RED         2
-
 /* Buzzer (ativo — liga/desliga simples) */
 #define CONFIG_GPIO_BUZZER          3
 
@@ -127,7 +148,6 @@
 #define CONFIG_GPIO_SERVO           21
 
 /* Nível lógico que ACENDE cada componente (placa pode inverter). */
-#define CONFIG_LEVEL_LED_ON         1
 #define CONFIG_LEVEL_BUZZER_ON      1
 
 /* =============================================================================
@@ -161,12 +181,9 @@
  * 5. PARÂMETROS DA CÂMERA (OV5640)
  * =============================================================================
  *
- * OV5640 suporta até QSXGA (2560×1920), mas para transmissão MQTT
- * mantemos SVGA (800×600) como padrão. Aumente para UXGA ou QSXGA
- * apenas se o tempo de transmissão for aceitável.
+ * OV5640 suporta até QSXGA (2560×1920), mas para
+ * transmissão MQTT será mantido SVGA (800×600) como padrão.
  *
- * OV5640 pode precisar de XCLK 20 MHz ou 24 MHz dependendo do módulo.
- * 20 MHz é o mais comum e funciona na maioria dos casos.
  * ========================================================================== */
 
 #define CONFIG_CAM_XCLK_FREQ_HZ     10000000
@@ -179,8 +196,8 @@
 /* 1 framebuffer + WHEN_EMPTY: sensor só captura quando pedimos.
  * Reduz aquecimento significativamente. Latência de captura sobe
  * de ~0ms para ~200ms — irrelevante com ciclos de 30s. */
-#define CONFIG_CAM_FB_COUNT         1
-#define CONFIG_CAM_GRAB_MODE        CAMERA_GRAB_WHEN_EMPTY
+#define CONFIG_CAM_FB_COUNT         2
+#define CONFIG_CAM_GRAB_MODE        CAMERA_GRAB_LATEST
 #define CONFIG_CAM_PIXEL_FORMAT     PIXFORMAT_JPEG
 
 /* =============================================================================

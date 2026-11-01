@@ -47,6 +47,8 @@
 #include "tasks.h"
 #include "ota.h"
 #include "factory_reset_button.h"
+#include "led_status.h"
+#include "hmac_auth.h"
 
 static const char *TAG = CONFIG_LOG_TAG_MAIN;
 
@@ -176,6 +178,9 @@ void app_main(void)
     app_config_t cfg;
     app_config_load(&cfg);
 
+    ESP_LOGI(TAG, "BOOT CHECK: provisioned=%d, ssid='%s' (len=%zu)",
+         cfg.provisioned, cfg.wifi_ssid, strlen(cfg.wifi_ssid));
+
     if (!cfg.provisioned) {
         /* Primeiro boot ou reset de fábrica: modo portal */
         ESP_LOGI(TAG, "Não provisionado — iniciando portal de configuração");
@@ -183,6 +188,14 @@ void app_main(void)
     }
 
     ESP_LOGI(TAG, "Configuração encontrada: SSID='%s'", cfg.wifi_ssid);
+
+    /* HMAC precisa do config carregado e do PSA Crypto inicializado */
+    err = hmac_auth_init();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "HMAC init falhou: %s (imagens irão sem assinatura)",
+                 esp_err_to_name(err));
+        /* Não é crítico — sistema continua, servidor decide */
+    }
 
     /* -------------------------------------------------------------------------
      * 2) Subsistema OTA
@@ -193,6 +206,15 @@ void app_main(void)
         ESP_LOGE(TAG, "Falha ao inicializar OTA: %s", esp_err_to_name(err));
         /* Não é crítico para o funcionamento normal — sem OTA, mas com câmera,
          * LEDs, etc. o firmware ainda faz o que precisa. */
+    }
+
+    /* LED de status — precisa estar ativo antes dos self-tests que
+     * o utilizam como feedback visual (actuators_self_test usa
+     * led_status_set_raw para piscar verde/vermelho). */
+    err = led_status_init();
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "LED de status não iniciado: %s (sistema continua)",
+                 esp_err_to_name(err));
     }
 
     /* -------------------------------------------------------------------------

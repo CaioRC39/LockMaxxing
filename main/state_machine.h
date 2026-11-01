@@ -136,6 +136,9 @@ typedef enum {
 
     /* ---- Fora de fluxo ---- */
     SM_EVENT_ABORT            = 14,  /* desligamento ou reboot iminente */
+
+    /* ---- Filtro de qualidade ---- */
+    SM_EVENT_CAPTURE_REJECTED = 15,  /* frame não passou nos critérios */
 } sm_event_t;
 
 /* -----------------------------------------------------------------------------

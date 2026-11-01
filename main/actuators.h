@@ -138,40 +138,13 @@ esp_err_t actuators_all_off(void);
 /* -----------------------------------------------------------------------------
  * Controle individual (diagnóstico)
  * --------------------------------------------------------------------------
+ * LED verde/vermelho foram substituídos pelo WS2812 onboard (ver led_status.h).
+ * O feedback visual de aprovação/reprovação agora é feito pela máquina de
+ * estados via led_status_set_raw() em on_enter_state(APPLYING).
  *
- * Estes setters existem para o self-test e para depuração dentro da
- * actuator_task. Não os chame de múltiplas tasks.
+ * Estes setters existem para diagnóstico dentro da actuator_task.
  * -------------------------------------------------------------------------- */
-
-/**
- * @brief Liga/desliga o LED verde. Não bloqueia.
- */
-esp_err_t actuators_set_led_green(bool on);
-
-/**
- * @brief Liga/desliga o LED vermelho. Não bloqueia.
- */
-esp_err_t actuators_set_led_red(bool on);
-
-/**
- * @brief Liga/desliga o buzzer. Não bloqueia.
- */
 esp_err_t actuators_set_buzzer(bool on);
-
-/**
- * @brief Move o servo para um ângulo.
- *
- * Converte graus (0–180) em duty cycle do LEDC usando interpolação
- * linear entre CONFIG_SERVO_DUTY_MIN e CONFIG_SERVO_DUTY_MAX.
- *
- * Não bloqueia: o servo começa a se mover e a função retorna
- * imediatamente. Se você precisa esperar o movimento terminar,
- * use vTaskDelay depois.
- *
- * @param degrees  Ângulo em graus, 0 a 180. Valores fora são limitados.
- *
- * @return ESP_OK em sucesso.
- */
 esp_err_t actuators_set_servo_angle(uint8_t degrees);
 
 #ifdef __cplusplus

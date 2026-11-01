@@ -171,4 +171,103 @@ menu "LockMaxxing Configuration"
             60 s (1 min) é o padrão. Janelas menores (10-30 s) são mais
             agressivas; janelas maiores (300+) são mais permissivas.
 
+    config LOCKMAXXING_LED_BRIGHTNESS
+        int "Brilho máximo do LED WS2812 (0-255)"
+        default 60
+        range 0 255
+        help
+            Escala global de brilho do LED de status.
+
+            O WS2812 onboard em 255 é ofuscante em ambiente interno.
+            60 (~24%) é confortável para indicar estado sem chamar
+            atenção demais. Aumente para demonstrações ao ar livre.
+
+            0 desliga o LED completamente (útil para testes).
+
+    config LOCKMAXXING_LED_ENABLED
+        bool "Habilitar LED de status"
+        default y
+        help
+            Se desabilitado, o módulo led_status não é inicializado e
+            todos os GPIOs permanecem livres. Útil para builds de
+            produção sem LED, ou para isolar um problema no RMT.
+
+    config LOCKMAXXING_QUALITY_FILTER_ENABLED
+        bool "Habilitar filtro de qualidade"
+        default y
+        help
+            Analisa brilho e nitidez antes de enviar a imagem.
+            Imagens fora dos limites são rejeitadas (não enviadas ao servidor).
+
+            Reduz o tráfego MQTT em cenas inadequadas (muito escuras,
+            muito claras, desfocadas) sem sacrificar o que importa.
+
+            Com a câmera em grayscale, a análise opera sobre o canal Y
+            diretamente, sem conversão.
+
+    config LOCKMAXXING_QUALITY_MIN_BRIGHTNESS
+        int "Brilho mínimo aceitável (0-255)"
+        default 30
+        range 0 255
+        help
+            Média de intensidade mínima (canal Y).
+
+            Imagens abaixo desse valor são rejeitadas como MUITO ESCURAS.
+            Padrão 30 rejeita apenas cenas quase pretas. Ajuste para 60-80
+            se sua cena típica tem iluminação controlada e você quer
+            rejeitar também sombras fortes.
+
+    config LOCKMAXXING_QUALITY_MAX_BRIGHTNESS
+        int "Brilho máximo aceitável (0-255)"
+        default 240
+        range 0 255
+        help
+            Média de intensidade máxima.
+
+            Imagens acima são rejeitadas como MUITO CLARAS (superexpostas).
+            Padrão 240 rejeita apenas superexposição extrema. Ajuste para
+            200-210 se sua cena tem iluminação controlada.
+
+    config LOCKMAXXING_QUALITY_MIN_SHARPNESS
+        int "Nitidez mínima (variância do Laplaciano)"
+        default 20
+        range 0 5000
+        help
+            Variância do Laplaciano mínima. Quanto maior, mais nítida.
+
+            A variância do Laplaciano depende MUITO da cena:
+              - Parede lisa sem textura: 5-20
+              - Cena com bordas suaves: 30-100
+              - Cena normal com bordas definidas: 100-500
+              - Cena de alto contraste: >500
+
+            Padrão 20 rejeita apenas imagens completamente desfocadas
+            ou sem conteúdo (lente coberta, parede lisa). Para exigir
+            mais nitidez, suba para 50-100.
+
+    config LOCKMAXXING_QUALITY_DEBUG_LOG
+        bool "Logar métricas de TODAS as imagens (para tuning)"
+        default n
+        help
+            Quando habilitado, loga brightness e sharpness de cada captura,
+            incluindo as aprovadas. Útil para calibrar os thresholds acima
+            com dados reais da sua cena.
+
+            Desabilite em produção (poluí o log).
+
+    config LOCKMAXXING_FACTORY_HMAC_SECRET
+        string "HMAC secret de fábrica (hex, 64 chars; vazio = desabilita)"
+        default ""
+        help
+            Segredo HMAC-SHA256 para assinatura de imagens.
+
+            - Vazio: HMAC desabilitado (imagens enviadas sem assinatura).
+            - 64 chars hex: HMAC ativo, chave de 32 bytes.
+
+            Gere com: openssl rand -hex 32
+
+            ATENÇÃO: preencha via menuconfig antes do flash. O segredo
+            vai para o binário (extraível com esptool). Para produção
+            real, provisione via /admin/config após o flash.
+
 endmenu

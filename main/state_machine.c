@@ -60,21 +60,22 @@ static const char *const k_state_names[] = {
 };
 
 static const char *const k_event_names[] = {
-    [SM_EVENT_NETWORK_READY]   = "NETWORK_READY",
-    [SM_EVENT_NETWORK_DOWN]    = "NETWORK_DOWN",
-    [SM_EVENT_TRIGGER_CAPTURE] = "TRIGGER_CAPTURE",
-    [SM_EVENT_CAPTURE_OK]      = "CAPTURE_OK",
-    [SM_EVENT_CAPTURE_FAILED]  = "CAPTURE_FAILED",
-    [SM_EVENT_CAPTURE_TIMEOUT] = "CAPTURE_TIMEOUT",
-    [SM_EVENT_SEND_OK]         = "SEND_OK",
-    [SM_EVENT_SEND_FAILED]     = "SEND_FAILED",
-    [SM_EVENT_RESULT_APPROVED] = "RESULT_APPROVED",
-    [SM_EVENT_RESULT_REJECTED] = "RESULT_REJECTED",
-    [SM_EVENT_RESULT_TIMEOUT]  = "RESULT_TIMEOUT",
-    [SM_EVENT_RESULT_INVALID]  = "RESULT_INVALID",
-    [SM_EVENT_APPLY_DONE]      = "APPLY_DONE",
-    [SM_EVENT_RESET]           = "RESET",
-    [SM_EVENT_ABORT]           = "ABORT",
+    [SM_EVENT_NETWORK_READY]    = "NETWORK_READY",
+    [SM_EVENT_NETWORK_DOWN]     = "NETWORK_DOWN",
+    [SM_EVENT_TRIGGER_CAPTURE]  = "TRIGGER_CAPTURE",
+    [SM_EVENT_CAPTURE_OK]       = "CAPTURE_OK",
+    [SM_EVENT_CAPTURE_FAILED]   = "CAPTURE_FAILED",
+    [SM_EVENT_CAPTURE_TIMEOUT]  = "CAPTURE_TIMEOUT",
+    [SM_EVENT_SEND_OK]          = "SEND_OK",
+    [SM_EVENT_SEND_FAILED]      = "SEND_FAILED",
+    [SM_EVENT_RESULT_APPROVED]  = "RESULT_APPROVED",
+    [SM_EVENT_RESULT_REJECTED]  = "RESULT_REJECTED",
+    [SM_EVENT_RESULT_TIMEOUT]   = "RESULT_TIMEOUT",
+    [SM_EVENT_RESULT_INVALID]   = "RESULT_INVALID",
+    [SM_EVENT_APPLY_DONE]       = "APPLY_DONE",
+    [SM_EVENT_RESET]            = "RESET",
+    [SM_EVENT_ABORT]            = "ABORT",
+    [SM_EVENT_CAPTURE_REJECTED] = "CAPTURE_REJECTED",    
 };
 
 /* -----------------------------------------------------------------------------
@@ -224,16 +225,16 @@ sm_state_t sm_process_event(sm_event_t event)
             new_state = SM_STATE_ERROR;
             break;
 
+        case SM_EVENT_CAPTURE_REJECTED:
+            ESP_LOGW(TAG, "Frame rejeitado pelo filtro de qualidade — voltando a IDLE");
+            new_state = SM_STATE_IDLE;
+            break;
+
         case SM_EVENT_ABORT:
             new_state = SM_STATE_ERROR;
             break;
 
         default:
-            /*
-             * NETWORK_DOWN cai aqui por ausência de case: a captura é
-             * local, não depende de rede. Quando formos enviar, essa
-             * queda será detectada pelo publish.
-             */
             ESP_LOGW(TAG, "Evento %s inválido em CAPTURING — ignorando",
                      sm_get_event_name(event));
             break;

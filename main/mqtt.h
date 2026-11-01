@@ -184,21 +184,18 @@ esp_err_t mqtt_set_result_callback(mqtt_result_cb_t cb);
  * @brief Publica metadados JSON no tópico REQUEST.
  *
  * Payload gerado:
- *   {"id": <image_id>, "size": <total_size>, "chunks": <total_chunks>}
+ *   {"id": <image_id>, "size": <total_size>, "chunks": <total_chunks>,
+ *    "hmac": "<64 hex>"}
  *
- * O servidor usa esses dados para pré-alocar buffer e validar integridade
- * antes de receber os chunks. Deve ser publicado UMA vez, antes do
- * primeiro chunk.
+ * O campo "hmac" é omitido se hmac_hex == NULL ou string vazia.
  *
- * @param image_id       ID da imagem (uint32).
- * @param total_size     Tamanho total do JPEG em bytes.
- * @param total_chunks   Número total de chunks que serão enviados.
- *
- * @return ESP_OK em sucesso (ver bloco acima para outros códigos).
+ * @param hmac_hex  Assinatura HMAC-SHA256 hex (64 chars + '\0'),
+ *                  ou NULL/"" para omitir.
  */
 esp_err_t mqtt_publish_request(uint32_t image_id,
                                uint32_t total_size,
-                               uint16_t total_chunks);
+                               uint16_t total_chunks,
+                               const char *hmac_hex);
 
 /**
  * @brief Publica um chunk de imagem no tópico IMAGE.

@@ -24,11 +24,13 @@
 #define APP_CONFIG_SSID_MAX     33
 #define APP_CONFIG_PASS_MAX     65
 #define APP_CONFIG_URI_MAX      129
+#define APP_CONFIG_HMAC_MAX     65
 
 typedef struct {
     char wifi_ssid[APP_CONFIG_SSID_MAX];
     char wifi_password[APP_CONFIG_PASS_MAX];
     char mqtt_uri[APP_CONFIG_URI_MAX];
+    char hmac_secret[APP_CONFIG_HMAC_MAX];
     bool provisioned;
 } app_config_t;
 

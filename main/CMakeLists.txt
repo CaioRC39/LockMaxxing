@@ -34,6 +34,9 @@ idf_component_register(
         "app_config.c"
         "wifi_provisioning.c"
         "factory_reset_button.c"
+        "led_status.c"
+        "quality_filter.c"
+        "hmac_auth.c"
 
     # -------------------------------------------------------------------------
     # INCLUDE_DIRS — Diretórios de headers públicos
@@ -68,6 +71,9 @@ idf_component_register(
         esp_https_server    # Servidor HTTPS local (ota_server.c)
         esp_http_server     # Requerido transitivamente por esp_https_server
         mbedtls             # SHA-256 (ota_common.c)
+        espressif__led_strip
+        esp_driver_rmt
+        espressif__esp_jpeg
 )
 
 # =============================================================================

@@ -38,6 +38,9 @@
 #include "mqtt.h"
 #include "actuators.h"
 #include "ota.h"
+#include "led_status.h"
+#include "quality_filter.h"
+#include "hmac_auth.h"
 
 /* Timeouts específicos deste módulo (não em config.h para não poluir) */
 #define TASKS_APPLY_TIMEOUT_MS      8000    /* actuator_task: 3s típ. + margem */
@@ -73,6 +76,7 @@ typedef enum {
     COMM_MSG_NETWORK_DOWN,    /* wifi ou mqtt caiu                        */
     COMM_MSG_CAMERA_FRAME,    /* data.frame = frame JPEG capturado        */
     COMM_MSG_CAMERA_FAILED,   /* camera_task não conseguiu capturar       */
+    COMM_MSG_CAMERA_REJECTED, /* camera rejeitou imagem                   */
     COMM_MSG_RESULT,          /* data.result = resultado vindo do broker  */
     COMM_MSG_APPLY_DONE,      /* actuator_task terminou a sequência       */
     COMM_MSG_TRIGGER_CAPTURE, /* trigger externo (tasks_trigger_capture)  */
@@ -95,6 +99,10 @@ typedef struct {
             bool     approved;
         } result;
         camera_frame_t *frame;
+        struct {
+            quality_result_t reason;
+            quality_metrics_t metrics;
+        } rejection;   /* ← NOVO */
     } data;
 } comm_msg_t;
 
@@ -299,7 +307,6 @@ static void camera_task(void *arg)
     while (true) {
         camera_cmd_t cmd;
         if (xQueueReceive(s_camera_cmd_queue, &cmd, portMAX_DELAY) != pdTRUE) {
-            /* Timeout impossível com portMAX_DELAY, mas defensivo. */
             continue;
         }
 
@@ -310,30 +317,53 @@ static void camera_task(void *arg)
 
         if (err != ESP_OK || frame == NULL) {
             ESP_LOGE(TAG, "Captura falhou: %s", esp_err_to_name(err));
-
             comm_msg_t msg = { .type = COMM_MSG_CAMERA_FAILED };
             if (xQueueSend(s_comm_msg_queue, &msg, pdMS_TO_TICKS(100)) != pdTRUE) {
-                ESP_LOGW(TAG, "Fila comm cheia — falha de captura perdida");
-                /* comm_task vai detectar timeout em CAPTURING e ir a ERROR */
+                ESP_LOGW(TAG, "Fila cheia — falha perdida");
             }
             continue;
         }
 
+#if CONFIG_LOCKMAXXING_QUALITY_FILTER_ENABLED
+        /* Analisa o JPEG efetivo (o mesmo que seria enviado) */
+        quality_metrics_t metrics;
+        quality_result_t result = quality_analyze_jpeg(frame->buf, frame->len,
+                                                       &metrics);
+
+        if (result != QUALITY_OK) {
+            ESP_LOGW(TAG, "Frame rejeitado: %s", quality_result_name(result));
+            camera_release(frame);
+
+            comm_msg_t msg = {
+                .type = COMM_MSG_CAMERA_REJECTED,
+                .data.rejection = {
+                    .reason  = result,
+                    .metrics = metrics,
+                },
+            };
+            if (xQueueSend(s_comm_msg_queue, &msg, pdMS_TO_TICKS(100)) != pdTRUE) {
+                ESP_LOGW(TAG, "Fila cheia — rejeição perdida");
+            }
+            continue;
+        }
+
+        ESP_LOGI(TAG, "Frame aprovado: %u bytes (brilho=%.1f, nitidez=%.1f)",
+                 (unsigned)frame->len,
+                 metrics.brightness, metrics.sharpness);
+#else
         ESP_LOGI(TAG, "Frame capturado: %u×%u, %u bytes",
                  (unsigned)frame->width, (unsigned)frame->height,
                  (unsigned)frame->len);
+#endif
 
         comm_msg_t msg = {
             .type = COMM_MSG_CAMERA_FRAME,
             .data.frame = frame,
         };
         if (xQueueSend(s_comm_msg_queue, &msg, pdMS_TO_TICKS(100)) != pdTRUE) {
-            /* Fila cheia: ninguém vai consumir este frame. Libera AGORA
-             * para não vazar PSRAM. */
-            ESP_LOGW(TAG, "Fila comm cheia — frame descartado");
+            ESP_LOGW(TAG, "Fila cheia — frame descartado");
             camera_release(frame);
         }
-        /* Se xQueueSend OK, ownership passou para comm_task. */
     }
 }
 
@@ -419,8 +449,27 @@ static void do_send_chunked(comm_task_ctx_t *ctx)
              (unsigned)image_id, (unsigned)frame->len,
              (unsigned)total_chunks);
 
-    /* 1) Request com metadados */
-    esp_err_t err = mqtt_publish_request(image_id, frame->len, total_chunks);
+    ctx->pending_image_id = image_id;
+
+    ESP_LOGI(TAG, "Enviando imagem id=%u: %u bytes, %u chunks%s",
+             (unsigned)image_id, (unsigned)frame->len,
+             (unsigned)total_chunks,
+             hmac_auth_is_enabled() ? " (assinada)" : "");
+
+    /* Calcula HMAC se habilitado */
+    char hmac_hex[65] = {0};
+    if (hmac_auth_is_enabled()) {
+        esp_err_t hres = hmac_sign_image(image_id, frame->len, total_chunks,
+                                         frame->buf, frame->len, hmac_hex);
+        if (hres != ESP_OK) {
+            ESP_LOGE(TAG, "Falha ao assinar imagem: %s", esp_err_to_name(hres));
+            /* Segue sem assinatura — servidor decide se rejeita */
+            hmac_hex[0] = '\0';
+        }
+    }
+
+    /* 1) Request com metadados (agora com HMAC se configurado) */
+    esp_err_t err = mqtt_publish_request(image_id, frame->len, total_chunks, hmac_hex);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "mqtt_publish_request falhou: %s", esp_err_to_name(err));
         goto fail;
@@ -479,6 +528,8 @@ fail:
 
 static void on_enter_state(comm_task_ctx_t *ctx, sm_state_t new_state)
 {
+    led_status_set(new_state);
+    
     switch (new_state) {
 
     case SM_STATE_INIT:
@@ -511,9 +562,16 @@ static void on_enter_state(comm_task_ctx_t *ctx, sm_state_t new_state)
         break;
 
     case SM_STATE_APPLYING: {
-        /* Enfileira sequência para a actuator_task. A decisão de APROVADO
-         * vs REPROVADO vem do resultado que causou esta transição — está
-         * em ctx->pending_apply_approved (setado em process_comm_msg). */
+        /* Feedback visual imediato via WS2812: verde ou vermelho,
+         * dependendo do resultado que causou a transição. Fica
+         * ativo durante os ~3s da sequência do atuador e volta ao
+         * normal quando a SM transiciona para IDLE. */
+        if (ctx->pending_apply_approved) {
+            led_status_set_raw(0, 200, 0);   /* verde brilhante */
+        } else {
+            led_status_set_raw(200, 0, 0);   /* vermelho brilhante */
+        }
+
         actuator_cmd_t cmd = {
             .result = ctx->pending_apply_approved
                       ? ACTUATOR_RESULT_APPROVED
@@ -578,6 +636,14 @@ static void process_comm_msg(comm_task_ctx_t *ctx, const comm_msg_t *msg)
 
     case COMM_MSG_CAMERA_FAILED:
         sm_process_event(SM_EVENT_CAPTURE_FAILED);
+        break;
+
+    case COMM_MSG_CAMERA_REJECTED:
+        ESP_LOGW(TAG, "Frame rejeitado por qualidade (%s) — brilho=%d, nitidez=%d",
+                 quality_result_name(msg->data.rejection.reason),
+                 (int)(msg->data.rejection.metrics.brightness * 10),
+                 (int)(msg->data.rejection.metrics.sharpness * 10));
+        sm_process_event(SM_EVENT_CAPTURE_REJECTED);
         break;
 
     case COMM_MSG_RESULT:

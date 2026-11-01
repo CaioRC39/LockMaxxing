@@ -23,8 +23,9 @@
  * ========================================================================== */
 
 #include "cJSON.h"
- #include "ota.h"
+#include "ota.h"
 #include "ota_internal.h"
+#include "led_status.h"
 
 #include "sdkconfig.h"
 
@@ -473,6 +474,39 @@ static esp_err_t admin_config_handler(httpd_req_t *req)
         ESP_LOGW(TAG_SRV, "  wifi_password -> *** (oculto)");
     }
 
+    /* HMAC secret (opcional) */
+    cJSON *hmac_item = cJSON_GetObjectItem(root, "hmac_secret");
+    if (cJSON_IsString(hmac_item) && hmac_item->valuestring != NULL) {
+        const char *s = hmac_item->valuestring;
+        size_t slen = strlen(s);
+
+        if (slen != 0 && slen != 64) {
+            cJSON_Delete(root);
+            return send_json_error(req, 400,
+                                   "hmac_secret must be 64 hex chars or empty");
+        }
+        /* Validação básica de hex */
+        for (size_t i = 0; i < slen; i++) {
+            char c = s[i];
+            bool hex = (c >= '0' && c <= '9') ||
+                       (c >= 'a' && c <= 'f') ||
+                       (c >= 'A' && c <= 'F');
+            if (!hex) {
+                cJSON_Delete(root);
+                return send_json_error(req, 400, "hmac_secret not hex");
+            }
+        }
+        if (slen >= sizeof(cfg.hmac_secret)) {
+            cJSON_Delete(root);
+            return send_json_error(req, 400, "hmac_secret too long");
+        }
+
+        strlcpy(cfg.hmac_secret, s, sizeof(cfg.hmac_secret));
+        changed = true;
+        ESP_LOGW(TAG_SRV, "  hmac_secret -> %s",
+                 (slen == 0) ? "(disabled)" : "*** (set)");
+    }
+
     cJSON_Delete(root);
 
     if (!changed) {
@@ -567,6 +601,7 @@ static esp_err_t update_post_handler(httpd_req_t *req)
 
     ota_set_state(OTA_STATE_DOWNLOADING);
     g_ota_busy = true;
+    led_status_set_ota_active(true);
 
     /* A partir daqui, precisamos liberar o mutex em QUALQUER caminho. */
     esp_err_t err = ESP_OK;

@@ -14,7 +14,7 @@
 #   Broker MQTT local (Mosquitto): veja README para instalação
 #
 # Uso básico:
-#   python tools/mqtt_t1est_server.py --broker localhost
+#   python tools/mqtt_test_server.py --broker localhost
 #
 # Modos de decisão (--mode):
 #   always-approve  (default) Sempre aprova
@@ -134,6 +134,27 @@ class ImageAnalyzer:
         self.client.on_connect    = self.on_connect
         self.client.on_disconnect = self.on_disconnect
         self.client.on_message    = self.on_message
+
+        # ── TLS / mTLS ────────────────────────────────────────────────────
+        if self.args.ca_cert:
+            try:
+                self.client.tls_set(
+                    ca_certs=self.args.ca_cert,
+                    certfile=self.args.client_cert or None,
+                    keyfile=self.args.client_key or None,
+                )
+                if self.args.insecure:
+                    self.client.tls_insecure_set(True)
+                    print("[TLS] ATENÇÃO: verificação de hostname desabilitada")
+                else:
+                    print(f"[TLS] CA: {self.args.ca_cert}")
+                    if self.args.client_cert:
+                        print(f"[TLS] Cliente cert: {self.args.client_cert}")
+            except Exception as exc:
+                print(f"[TLS] Erro ao configurar: {exc}", file=sys.stderr)
+                raise
+        # ─────────────────────────────────────────────────────────────────
+
         self.hmac_secret = (bytes.fromhex(args.hmac_secret)
                             if args.hmac_secret else None)
         if self.hmac_secret:
@@ -457,11 +478,11 @@ def build_argparser() -> argparse.ArgumentParser:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
 
-    # Broker
-    p.add_argument("--broker",   default="localhost",
+    # Conexão
+    p.add_argument("--broker", default="localhost",
                    help="Endereço do broker MQTT")
-    p.add_argument("--port",     type=int, default=1883,
-                   help="Porta do broker MQTT")
+    p.add_argument("--port", type=int, default=8883,
+                   help="Porta MQTT (8883 = TLS, 1883 = plaintext)")
     p.add_argument("--username", default=None,
                    help="Usuário MQTT (opcional)")
     p.add_argument("--password", default=None,
@@ -485,6 +506,16 @@ def build_argparser() -> argparse.ArgumentParser:
     p.add_argument("--hmac-secret", default=None, metavar="HEX",
                    help="Segredo HMAC-SHA256 hex (64 chars). "
                         "Se fornecido, imagens sem assinatura válida são rejeitadas.")
+
+    # TLS
+    p.add_argument("--ca-cert", default="tools/certs/ca.crt",
+                   help="CA que assinou o cert do broker. Vazio desabilita TLS.")
+    p.add_argument("--client-cert", default="tools/certs/client.crt",
+                   help="Certificado de cliente (para mTLS)")
+    p.add_argument("--client-key", default="tools/certs/client.key",
+                   help="Chave do certificado de cliente (para mTLS)")
+    p.add_argument("--insecure", action="store_true",
+                   help="Não verificar hostname (só para debug)")
 
     # Output
     p.add_argument("--output-dir", default="received_images",

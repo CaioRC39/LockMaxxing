@@ -149,21 +149,36 @@ quality_result_t quality_analyze_jpeg(const uint8_t *jpeg_data,
     if (var_lap < 0.0f) var_lap = 0.0f;
     out->sharpness = var_lap;
 
-    /* ---- Classificação ---- */
-    if (out->brightness < CONFIG_LOCKMAXXING_QUALITY_MIN_BRIGHTNESS) {
+    /* Ordem de prioridade:
+     *   1. TOO_BLURRY — ação: reajustar foco (acionável)
+     *   2. TOO_DARK   — ação: iluminar cena (acionável mas fora do controle do SW)
+     *   3. TOO_BRIGHT — ação: reduzir luz (idem)
+     *
+     * Um frame desfocado apontado para luz forte é mais provavelmente
+     * "esqueci de focar" do que "a luz está intensa". Reportar TOO_BLURRY
+     * dá ao usuário o diagnóstico certo.
+     */
+    if (out->sharpness < CONFIG_LOCKMAXXING_QUALITY_MIN_SHARPNESS) {
+        out->result = QUALITY_TOO_BLURRY;
+    } else if (out->brightness < CONFIG_LOCKMAXXING_QUALITY_MIN_BRIGHTNESS) {
         out->result = QUALITY_TOO_DARK;
     } else if (out->brightness > CONFIG_LOCKMAXXING_QUALITY_MAX_BRIGHTNESS) {
         out->result = QUALITY_TOO_BRIGHT;
-    } else if (out->sharpness < CONFIG_LOCKMAXXING_QUALITY_MIN_SHARPNESS) {
-        out->result = QUALITY_TOO_BLURRY;
     } else {
         out->result = QUALITY_OK;
     }
 
+    /* Log adicional: reporta todos os problemas detectados,
+     * não só o prioritário. Útil para calibrar. */
 #if CONFIG_LOCKMAXXING_QUALITY_DEBUG_LOG
-    ESP_LOGI(TAG, "Análise: %ux%u, brilho=%.1f, nitidez=%.1f → %s",
-             width, height, out->brightness, out->sharpness,
-             quality_result_name(out->result));
+    if (out->sharpness < CONFIG_LOCKMAXXING_QUALITY_MIN_SHARPNESS &&
+        (out->brightness < CONFIG_LOCKMAXXING_QUALITY_MIN_BRIGHTNESS ||
+         out->brightness > CONFIG_LOCKMAXXING_QUALITY_MAX_BRIGHTNESS)) {
+        ESP_LOGW(TAG, "Frame tem MÚLTIPLOS problemas: nitidez=%.1f brilho=%.1f "
+                      "(reportado como prioridade: %s)",
+                 out->sharpness, out->brightness,
+                 quality_result_name(out->result));
+    }
 #else
     if (out->result != QUALITY_OK) {
         ESP_LOGW(TAG, "Rejeitado: %s (brilho=%.1f, nitidez=%.1f)",
